@@ -41,7 +41,7 @@ SYMBOLS = [
 FRAMES = ["1h", "15m", "5m"]      # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
 TP_RATIO = 2.0                    # Współczynnik Risk:Reward dla TP (R:R 1:2)
-wait_time = 40 # 40 sekund 
+wait_time = 60 # 60 sekund 
 # ------------------------------------------------------------
 
 # ----------------- USTAWIENIA PARAMETRÓW WSZKAŹNIKÓW -----------------
@@ -391,6 +391,7 @@ start_bot_in_background() # <--- To jest jedyne wywołanie kodu, które działa 
 # ==============================================================================
 
 # UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze.
+
 
 
 
