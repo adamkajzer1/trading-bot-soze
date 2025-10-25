@@ -4,3 +4,4 @@ pandas
 Flask
 gunicorn
 pandas_ta
+
