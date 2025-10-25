@@ -8,7 +8,24 @@ import asyncio
 import pandas_ta as pta 
 # --------------------------------------
 
+# ==================== USTAWIENIA FLASK DLA RENDER/GUNICORN ====================
+from flask import Flask
+from threading import Thread
+
+# To jest ta instancja 'app', której szuka Gunicorn!
+app = Flask(__name__) 
+
+@app.route('/')
+def home():
+    # To jest wiadomość, którą Render/Gunicorn będą cyklicznie sprawdzać,
+    # aby upewnić się, że serwer działa 24/7.
+    return "Bot is running!"
+# ==============================================================================
+
+
 # ==================== USTAWIENIA TELEGRAMA ====================
+# WAŻNE: Render będzie używał ZMIENNYCH ŚRODOWISKOWYCH (które dodałeś), 
+# a nie tych w kodzie, ale dla porządku zostawiamy je jako domyślne.
 TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80"
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================
@@ -356,5 +373,6 @@ if __name__ == "__main__":
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
         time.sleep(wait_time)
+
 
 
