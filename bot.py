@@ -4,28 +4,26 @@ import time
 import pandas_ta as ta
 from telegram import Bot
 import asyncio
+from threading import Thread # 🚨 NOWY IMPORT DLA URUCHOMIENIA W TLE!
+
 # --- Import wskaźników technicznych ---
 import pandas_ta as pta 
 # --------------------------------------
 
 # ==================== USTAWIENIA FLASK DLA RENDER/GUNICORN ====================
 from flask import Flask
-from threading import Thread
-
 # To jest ta instancja 'app', której szuka Gunicorn!
 app = Flask(__name__) 
 
 @app.route('/')
 def home():
-    # To jest wiadomość, którą Render/Gunicorn będą cyklicznie sprawdzać,
-    # aby upewnić się, że serwer działa 24/7.
+    # Render używa tego do sprawdzenia, czy serwer jest "live"
     return "Bot is running!"
 # ==============================================================================
 
 
 # ==================== USTAWIENIA TELEGRAMA ====================
-# WAŻNE: Render będzie używał ZMIENNYCH ŚRODOWISKOWYCH (które dodałeś), 
-# a nie tych w kodzie, ale dla porządku zostawiamy je jako domyślne.
+# Uwaga: Render używa zmiennych środowiskowych, to są domyślne.
 TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80"
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================
@@ -36,13 +34,13 @@ SYMBOLS = [
     "EURGBP=X", "EURJPY=X", "EURAUD=X", "EURCAD=X", "EURCHF=X", "EURNZD=X",
     "GBPJPY=X", "GBPAUD=X", "GBPCAD=X", "GBPCHF=X", "GBPNZD=X",
     "AUDJPY=X", "CADJPY=X", "CHFJPY=X", "NZDJPY=X",
-    "GC=F",         # Złoto
-    "SI=F",         # Srebro
-    "BTC-USD"       # Bitcoin
+    "GC=F",          # Złoto
+    "SI=F",          # Srebro
+    "BTC-USD"        # Bitcoin
 ]
-FRAMES = ["1h", "15m", "5m"]        # LISTA INTERWAŁÓW
+FRAMES = ["1h", "15m", "5m"]      # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
-TP_RATIO = 2.0                      # Współczynnik Risk:Reward dla TP (R:R 1:2)
+TP_RATIO = 2.0                    # Współczynnik Risk:Reward dla TP (R:R 1:2)
 wait_time = 60 # 60 sekund = 1 minuta
 # ------------------------------------------------------------
 
@@ -62,7 +60,6 @@ MACD_SIGNAL = 9
 async def wyslij_alert(alert_text):
     """Wysyła alert za pomocą Telegrama asynchronicznie."""
     try:
-        # Bot nie jest zdefiniowany globalnie, więc użyjemy instancji globalnej
         await Bot(token=TELEGRAM_BOT_TOKEN).send_message(
             chat_id=TELEGRAM_CHAT_ID, 
             text=alert_text, 
@@ -161,7 +158,7 @@ def pobierz_dane(symbol, interwal):
         data = yf.download(symbol, interval=interwal, period="60d", progress=False)
         if data.empty:
             return pd.DataFrame()  
-        print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")   
+        print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")    
         return data
         
     except Exception as e:
@@ -297,9 +294,6 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     # Krok 2: POBRANIE OSTATNIEGO WIERSZA DANYCH
     ostatni_wiersz = dane_czyste.iloc[-1]
     
-    # 🚨 BLOK LOGOWANIA DANYCH 🚨
-    # ... (BLOK LOGOWANIA bez zmian)
-    
     # 3. FILTRY
     
     # Filtr Trendu (SMA 100)
@@ -345,13 +339,23 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
         
     return
     
-# ==================== URUCHOMIENIE PĘTLI 24/7 ====================
-if __name__ == "__main__":
+# ==================== FUNKCJA GŁÓWNA PĘTLI SKANUJĄCEJ ====================
+def skanuj_rynek_ciagle():
+    """Główna funkcja zawierająca pętlę nieskończoną bota."""
     
-    bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
-    
+    # Wiadomość startowa bota do Telegrama
     print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
-    asyncio.run(wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów."))
+    
+    # Wysyłanie wiadomości testowej zaraz po starcie wątku
+    start_message = (
+        "             👁️\n"
+        "👑 **SO-ZE** 👑\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "✅ **BOT STARTUJE!** Usługa Render aktywna 24/7.\n"
+        f"⏳ Interwał skanowania: {wait_time} sekund."
+    )
+    # Używamy asyncio.run, ponieważ funkcja wyslij_alert jest asynchroniczna
+    asyncio.run(wyslij_alert(start_message))
     
     while True:
         print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
@@ -372,7 +376,22 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
+        print(f"--- Cykl zakończony. Czekam {wait_time} sekund. ---")
         time.sleep(wait_time)
+
+
+# ==================== URUCHOMIENIE BOTA W TLE (DLA RENDER) ====================
+# Wywołanie funkcji start_bot_in_background, która uruchamia skanowanie w osobnym wątku.
+def start_bot_in_background():
+    """Uruchamia główną funkcję bota w tle, aby Gunicorn mógł działać jako serwer WWW."""
+    t = Thread(target=skanuj_rynek_ciagle)
+    t.start()
+
+start_bot_in_background() # <--- To jest jedyne wywołanie kodu, które działa w głównym procesie!
+# ==============================================================================
+
+# UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze.
+
 
 
 
