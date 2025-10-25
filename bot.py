@@ -341,40 +341,54 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     
 # ==================== FUNKCJA GŁÓWNA PĘTLI SKANUJĄCEJ ====================
 def skanuj_rynek_ciagle():
-    """Główna funkcja zawierająca pętlę nieskończoną bota."""
+    """Główna funkcja zawierająca pętlę nieskończoną bota, zabezpieczona przed krytycznymi błędami."""
     
-    # Wiadomość startowa bota do Telegrama
-    print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
-    
-    # Wysyłanie wiadomości testowej zaraz po starcie wątku
-    start_message = (
-        "             👁️\n"
-        "👑 **SO-ZE** 👑\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "✅ **BOT STARTUJE!** Usługa Render aktywna 24/7.\n"
-        f"⏳ Interwał skanowania: {wait_time} sekund."
-    )
-    # Używamy asyncio.run, ponieważ funkcja wyslij_alert jest asynchroniczna
-    asyncio.run(wyslij_alert(start_message))
-    
-    while True:
-        print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
+    # ------------------ 🛡️ BLOK BEZPIECZEŃSTWA 🛡️ ------------------
+    try:
+        # Wiadomość startowa bota do Telegrama
+        print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
         
-        for symbol in SYMBOLS: 
-            for frame in FRAMES:
-                try:
-                    dane = pobierz_dane(symbol, frame)
-                    if dane.empty: continue
-                    dane_ze_strategia = oblicz_wskaźniki_dodatkowe(dane)
-                    
-                    print(f"DEBUG: Rozmiar DF dla {symbol} na {frame}: {len(dane_ze_strategia)}")
-                    
-                    if not dane_ze_strategia.empty:
-                        print(f"-> Sprawdzam sygnały dla {symbol} na {frame}") 
-                        sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, frame)
+        # Wysyłanie wiadomości testowej zaraz po starcie wątku
+        start_message = (
+            "       👁️     \n"
+            "👑 **SO-ZE** 👑\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "✅ **BOT STARTUJE!** Usługa Render aktywna 24/7.\n"
+            f"⏳ **NOWY** interwał skanowania: {wait_time} sekund."
+        )
+        # Używamy asyncio.run, ponieważ funkcja wyslij_alert jest asynchroniczna
+        asyncio.run(wyslij_alert(start_message))
+        
+        while True:
+            print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
+            
+            for symbol in SYMBOLS: 
+                for frame in FRAMES:
+                    try:
+                        dane = pobierz_dane(symbol, frame)
+                        if dane.empty: continue
+                        dane_ze_strategia = oblicz_wskaźniki_dodatkowe(dane)
                         
-                except Exception as e:
-                    print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
+                        print(f"DEBUG: Rozmiar DF dla {symbol} na {frame}: {len(dane_ze_strategia)}")
+                        
+                        if not dane_ze_strategia.empty:
+                            print(f"-> Sprawdzam sygnały dla {symbol} na {frame}") 
+                            sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, frame)
+                            
+                    except Exception as e:
+                        # Ten blok łapie błędy dla pojedynczej pary
+                        print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
+            
+            print(f"--- Cykl zakończony. Czekam {wait_time} sekund. ---")
+            time.sleep(wait_time)
+            
+    except Exception as e:
+        # 🚨 KRYTYCZNY BLOK: Łapie błąd, który zabił wątek!
+        awaria_msg = f"🛑 KRYTYCZNY BŁĄD ZABIŁ WĄTEK SKANOWANIA! Bot przestał działać. Błąd: {e}"
+        print(awaria_msg)
+        # Wysyłamy alert o awarii na Telegrama
+        asyncio.run(wyslij_alert(awaria_msg))
+        # ------------------------------------------------------------------
         
         print(f"--- Cykl zakończony. Czekam {wait_time} sekund. ---")
         time.sleep(wait_time)
@@ -391,6 +405,7 @@ start_bot_in_background() # <--- To jest jedyne wywołanie kodu, które działa 
 # ==============================================================================
 
 # UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze.
+
 
 
 
