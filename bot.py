@@ -42,6 +42,7 @@ FRAMES = ["1h", "15m", "5m"]      # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
 TP_RATIO = 2.0                    # Współczynnik Risk:Reward dla TP (R:R 1:2)
 wait_time = 60 # 60 sekund 
+MIN_RISK = 0.00005 # Minimalne akceptowalne ryzyko (np. 5 pipsów)
 # ------------------------------------------------------------
 
 # ----------------- USTAWIENIA PARAMETRÓW WSZKAŹNIKÓW -----------------
@@ -69,42 +70,49 @@ async def wyslij_alert(alert_text):
     except Exception as e:
         print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
 
-def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
-    """Formatuje i wysyła ładniejszy i bardziej szczegółowy alert sygnału."""
+def generuj_alert(wiersz, symbol, interwal, strategia, kierunek, sl_val):
+    """Formatuje i wysyła ładniejszy i bardziej szczegółowy alert sygnału.
+        Zmienna sl_val jest teraz przekazywana, aby użyć zweryfikowanej wartości SL."""
     
     # Krok 1: Bezpieczne pobranie kluczowych danych
     price = wiersz['Close'].item()
     
-    # 🚨 POBIERANIE SL/TP
-    sl_low_item = wiersz.get('RSI_SL_Low', pd.NA).item() if wiersz.get('RSI_SL_Low', pd.NA) is not pd.NA else None
-    sl_high_item = wiersz.get('RSI_SL_High', pd.NA).item() if wiersz.get('RSI_SL_High', pd.NA) is not pd.NA else None
-
-    sl_val = None
-    
-    if kierunek == "BUY":
-        emoji = "🟢"
-        sl_val = sl_low_item
-    else: # SELL
-        emoji = "🔴"
-        sl_val = sl_high_item
-
-    # Krok 2: Obliczanie SL i TP
     sl_text = "N/A"
     tp_text = "N/A"
-    
+
+    if kierunek == "BUY":
+        emoji = "🟢"
+        sl_basis = "Low"
+    else: # SELL
+        emoji = "🔴"
+        sl_basis = "High"
+
+    # Krok 2: Obliczanie SL i TP
     if sl_val is not None:
         try:
-            sl_text = f"{sl_val:.5f}"
+            # ===================== POPRAWIONA LOGIKA RYZYKA =====================
+            # Ryzyko musi być zawsze dodatnią odległością.
+            risk = abs(price - sl_val) 
             
-            # Obliczenie ryzyka/nagrody
+            # Zabezpieczenie przed zerowym ryzykiem zostało już wykonane wcześniej
+            if risk == 0:
+                raise ValueError("Ryzyko jest zerowe. Błąd danych SL.")
+
+            # Obliczenie TP na podstawie kierunku i pozytywnego ryzyka (risk)
             if kierunek == "BUY":
-                risk = price - sl_val
+                # Dla BUY: TP = WEJŚCIE + RYZYKO_ABS * R:R
                 tp_val = price + risk * TP_RATIO
-            else:
-                risk = sl_val - price
+            else: # SELL
+                # Dla SELL: TP = WEJŚCIE - RYZYKO_ABS * R:R
                 tp_val = price - risk * TP_RATIO
-                
+            # =================================================================
+
+            sl_text = f"{sl_val:.5f}"
             tp_text = f"{tp_val:.5f}"
+        except ValueError as ve:
+            print(f"BŁĄD W GENEROWANIU ALERTU RYZYKA: {ve}")
+            sl_text = "Błąd SL"
+            tp_text = "Błąd TP"
         except:
             sl_text = "Błąd SL"
             tp_text = "Błąd TP"
@@ -144,7 +152,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         # 2. TAKE PROFIT (bold)
         f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b>\n" 
         # 3. STOP LOSS (bold)
-        f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> ({'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy)\n" 
+        f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> ({sl_basis} Poprz. Świecy)\n" 
         f"{details}"
     )
 
@@ -248,8 +256,8 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['MACD_Direction_Sell'] = data['MACD_Value'] <= data['MACDS_Value']
         
         # SL/TP bazujący na poprzedniej świecy
-        data['RSI_SL_Low'] = data['Low'].shift(1)
-        data['RSI_SL_High'] = data['High'].shift(1)
+        data['SL_Low'] = data['Low'].shift(1) # Zmiana nazwy dla spójności
+        data['SL_High'] = data['High'].shift(1) # Zmiana nazwy dla spójności
         
         # 6. Dodajemy kolumny 'Buy'/'Sell' jako typ Boolean (zabezpieczenie)
         data['SMA_Buy'] = data['SMA_Buy'].fillna(False)
@@ -277,7 +285,8 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     macd_name = 'MACD_Value'
     signal_name = 'MACDS_Value'
 
-    kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend'] 
+    # Dodano SL_Low/SL_High do kolumn do czyszczenia NaN, aby uniknąć błędów
+    kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend', 'SL_Low', 'SL_High'] 
     
     try:
         if macd_name not in dane_ze_strategia.columns: return
@@ -293,47 +302,59 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
 
     # Krok 2: POBRANIE OSTATNIEGO WIERSZA DANYCH
     ostatni_wiersz = dane_czyste.iloc[-1]
+    price = ostatni_wiersz['Close'].item()
     
     # 3. FILTRY
     
     # Filtr Trendu (SMA 100)
-    trend_filter_buy = ostatni_wiersz['Close'].item() > ostatni_wiersz['SMA_Trend'].item()
-    trend_filter_sell = ostatni_wiersz['Close'].item() < ostatni_wiersz['SMA_Trend'].item()
+    trend_filter_buy = price > ostatni_wiersz['SMA_Trend'].item()
+    trend_filter_sell = price < ostatni_wiersz['SMA_Trend'].item()
     
     # Filtr Konfluencji MACD (czy MACD jest powyżej/poniżej linii sygnału)
     macd_conf_buy = ostatni_wiersz['MACD_Direction_Buy'].item() 
     macd_conf_sell = ostatni_wiersz['MACD_Direction_Sell'].item() 
-
+    
+    # 🚨 NOWE FILTRY BEZPIECZEŃSTWA SL 🚨
+    sl_low = ostatni_wiersz['SL_Low'].item()
+    sl_high = ostatni_wiersz['SL_High'].item()
+    
+    # Weryfikacja SL dla BUY: SL (Low) musi być NIŻSZY niż cena wejścia, a różnica musi być > MIN_RISK
+    sl_ok_buy = (sl_low < price) and (abs(price - sl_low) >= MIN_RISK)
+    
+    # Weryfikacja SL dla SELL: SL (High) musi być WYŻSZY niż cena wejścia, a różnica musi być > MIN_RISK
+    sl_ok_sell = (sl_high > price) and (abs(price - sl_high) >= MIN_RISK)
+    
+    # =======================================================
     
     # 4. SPRAWDZENIE SYGNAŁÓW Z NOWYMI WARUNKAMI
 
-    # SPRAWDZENIE SMA Crossover (Wymaga Trendu i Konfluencji MACD)
+    # SPRAWDZENIE SMA Crossover (Wymaga Trendu, Konfluencji MACD i POPRAWNEGO SL)
     try:
-        if ostatni_wiersz['SMA_Buy'].item() and trend_filter_buy and macd_conf_buy:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "BUY")
+        if ostatni_wiersz['SMA_Buy'].item() and trend_filter_buy and macd_conf_buy and sl_ok_buy:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "BUY", sl_low)
             
-        if ostatni_wiersz['SMA_Sell'].item() and trend_filter_sell and macd_conf_sell: 
-            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "SELL")
+        if ostatni_wiersz['SMA_Sell'].item() and trend_filter_sell and macd_conf_sell and sl_ok_sell: 
+            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "SELL", sl_high)
     except KeyError:
         pass 
         
-    # SPRAWDZENIE RSI (Wymaga Trendu i Konfluencji MACD)
+    # SPRAWDZENIE RSI (Wymaga Trendu, Konfluencji MACD i POPRAWNEGO SL)
     try:
-        if ostatni_wiersz['RSI_Buy'].item() and trend_filter_buy and macd_conf_buy: 
-            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "BUY")
+        if ostatni_wiersz['RSI_Buy'].item() and trend_filter_buy and macd_conf_buy and sl_ok_buy: 
+            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "BUY", sl_low)
             
-        if ostatni_wiersz['RSI_Sell'].item() and trend_filter_sell and macd_conf_sell:
-            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "SELL")
+        if ostatni_wiersz['RSI_Sell'].item() and trend_filter_sell and macd_conf_sell and sl_ok_sell:
+            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "SELL", sl_high)
     except KeyError:
         pass 
         
-    # SPRAWDZENIE MACD Crossover (Wymaga Filtracji Trendu)
+    # SPRAWDZENIE MACD Crossover (Wymaga Filtracji Trendu i POPRAWNEGO SL)
     try:
-        if ostatni_wiersz['MACD_Buy'].item() and trend_filter_buy:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "BUY")
+        if ostatni_wiersz['MACD_Buy'].item() and trend_filter_buy and sl_ok_buy:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "BUY", sl_low)
             
-        if ostatni_wiersz['MACD_Sell'].item() and trend_filter_sell:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "SELL")
+        if ostatni_wiersz['MACD_Sell'].item() and trend_filter_sell and sl_ok_sell:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "SELL", sl_high)
     except KeyError:
         pass
         
@@ -405,7 +426,6 @@ start_bot_in_background() # <--- To jest jedyne wywołanie kodu, które działa 
 # ==============================================================================
 
 # UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze.
-
 
 
 
