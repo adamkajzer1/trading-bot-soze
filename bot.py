@@ -425,7 +425,8 @@ def start_bot_in_background():
 start_bot_in_background() # <--- To jest jedyne wywołanie kodu, które działa w głównym procesie!
 # ==============================================================================
 
-# UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze.
+# UWAGA: Usunięto: if __name__ == "__main__":, ponieważ nie jest potrzebne na Renderze
+
 
 
 
