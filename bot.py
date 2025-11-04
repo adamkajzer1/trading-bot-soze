@@ -9,7 +9,8 @@ import pandas_ta as pta
 # --------------------------------------
 
 # ==================== USTAWIENIA TELEGRAMA ====================
-TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZsRFW4qvXMGG2fzM0-DsO80"
+# WAŻNE! Zmień ten token na nowy, wygenerowany w BotFather.
+TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZsRFW4qvXMGG2fzM0-DsO80" 
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================
 
@@ -32,7 +33,7 @@ wait_time = 60 # 60 sekund = 1 minuta
 # ----------------- USTAWIENIA PARAMETRÓW WSZKAŹNIKÓW -----------------
 SMA_FAST = 10
 SMA_SLOW = 20
-SMA_TREND_FILTER = 100 # 🚨 NOWY: Filtr trendu (długoterminowa średnia)
+SMA_TREND_FILTER = 100 # Filtr trendu (długoterminowa średnia)
 RSI_PERIOD = 14 
 RSI_LOW_LEVEL = 30 
 RSI_HIGH_LEVEL = 70 
@@ -56,12 +57,14 @@ async def wyslij_alert(alert_text):
         print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
 
 def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
-    """Formatuje i wysyła ładniejszy i bardziej szczegółowy alert sygnału."""
+    """
+    Formatuje i wysyła alert. Dodano obliczenie PIPSY DO WZIĘCIA.
+    """
     
     # Krok 1: Bezpieczne pobranie kluczowych danych
     price = wiersz['Close'].item()
     
-    # 🚨 POBIERANIE SL/TP
+    # POBIERANIE SL/TP
     sl_low_item = wiersz.get('RSI_SL_Low', pd.NA).item() if wiersz.get('RSI_SL_Low', pd.NA) is not pd.NA else None
     sl_high_item = wiersz.get('RSI_SL_High', pd.NA).item() if wiersz.get('RSI_SL_High', pd.NA) is not pd.NA else None
 
@@ -77,7 +80,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     # Krok 2: Obliczanie SL i TP
     sl_text = "N/A"
     tp_text = "N/A"
-    pips_do_wziecia_text = "N/A" # 🚨 NOWA ZMIENNA
+    pips_do_wziecia_text = "N/A" # NOWA ZMIENNA
 
     if sl_val is not None:
         try:
@@ -87,23 +90,22 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
             if kierunek == "BUY":
                 risk = price - sl_val
                 tp_val = price + risk * TP_RATIO
-                pips_do_wziecia = (tp_val - price) * 10000 # Założenie 4-cyfrowych par (lub 2 dla JPY)
+                
             else:
                 risk = sl_val - price
                 tp_val = price - risk * TP_RATIO
-                pips_do_wziecia = (price - tp_val) * 10000 # Założenie 4-cyfrowych par (lub 2 dla JPY)
-
+                
             tp_text = f"{tp_val:.5f}"
 
-            # 🚨 Poprawa obliczeń pipsów dla różnych instrumentów
+            # Obliczenia pipsów dla różnych instrumentów
             if "JPY" in symbol:
-                # Pary JPY mają 2 miejsca dziesiętne (zazwyczaj mnożnik 100)
+                # Pary JPY (2 miejsca dziesiętne, mnożnik 100)
                 pips_do_wziecia = (abs(tp_val - price) * 100).round(1)
             elif "USD" in symbol or "EUR" in symbol or "GBP" in symbol or "AUD" in symbol or "CHF" in symbol or "NZD" in symbol:
                 # Standardowe pary walutowe (4/5 miejsc, mnożnik 10000)
                 pips_do_wziecia = (abs(tp_val - price) * 10000).round(1)
             else:
-                # Dla surowców/krypto - pipsy są mniej standardowe, użyjemy różnicy w punktach (Price Points)
+                # Dla surowców/krypto - używamy różnicy w punktach (Price Points)
                 pips_do_wziecia = abs(tp_val - price).round(2)
                 
             pips_do_wziecia_text = f"{pips_do_wziecia:.1f}"
@@ -113,8 +115,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
             tp_text = "Błąd TP"
             pips_do_wziecia_text = "Błąd Obliczenia"
 
-    # Krok 3: Szczegóły wskaźników (dodanie danych kontekstowych)
-    # Użycie tagu <b> dla spójności HTML
+    # Krok 3: Szczegóły wskaźników
     details = f"\n\n⚙️ <b>Szczegóły Wskaźników ({strategia})</b>:"
     
     if "SMA" in strategia:
@@ -137,7 +138,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         signal_val = wiersz.get(signal_name, pd.NA).item() if wiersz.get(signal_name, pd.NA) is not pd.NA else "N/A"
         details += f"\n- MACD/Signal: <code>{macd_val:.5f}</code> / <code>{signal_val:.5f}</code>"
         
-    # Krok 4: Składanie gotowej wiadomości (Utrzymana kolejność i pogrubienie liczb)
+    # Krok 4: Składanie gotowej wiadomości
     alert_text = (
         f"{emoji} <b>NOWY SYGNAŁ {kierunek}</b> ({strategia}) {emoji}\n"
         f"————————————————————\n"
@@ -145,7 +146,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         f"\n"
         # 1. WEJŚCIE (bold)
         f"💰 <b>WEJŚCIE:</b> <b>{price:.5f}</b>\n" 
-        # 🚨 NOWA LINIA Z INFORMACJĄ O PIPSACH
+        # 🎯 NOWA LINIA: Wartość pipsów do Take Profit
         f"🎯 <b>PIPSY DO WZIĘCIA:</b> <b>{pips_do_wziecia_text}</b> pipsów\n"
         # 2. TAKE PROFIT (bold)
         f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b>\n" 
@@ -159,7 +160,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
 
 
 def pobierz_dane(symbol, interwal):
-    """Pobiera historyczne dane OHLC z yfinance, bez agresywnego wstępnego czyszczenia."""
+    """Pobiera historyczne dane OHLC z yfinance."""
     try:
         data = yf.download(symbol, interval=interwal, period="60d", progress=False)
         if data.empty:
@@ -172,16 +173,15 @@ def pobierz_dane(symbol, interwal):
         return pd.DataFrame()
 
 def oblicz_wskaźniki_dodatkowe(data):
-    """Oblicza wskaźniki za pomocą biblioteki pandas_ta, z gwarantowaną normalizacją kolumn."""
+    """Oblicza wskaźniki za pomocą biblioteki pandas_ta."""
     
     data = data.copy()
     
     # --- Pobieranie wartości globalnych ---
     SMA_FAST_VAL = globals().get('SMA_FAST', 10)
     SMA_SLOW_VAL = globals().get('SMA_SLOW', 20)
-    SMA_TREND_FILTER_VAL = globals().get('SMA_TREND_FILTER', 100) # 🚨 NOWA WARTOŚĆ
+    SMA_TREND_FILTER_VAL = globals().get('SMA_TREND_FILTER', 100)
     RSI_PERIOD_VAL = globals().get('RSI_PERIOD', 14)
-    
     MACD_FAST_VAL = globals().get('MACD_FAST', 12)
     MACD_SLOW_VAL = globals().get('MACD_SLOW', 26)
     MACD_SIGNAL_VAL = globals().get('MACD_SIGNAL', 9)
@@ -203,7 +203,7 @@ def oblicz_wskaźniki_dodatkowe(data):
              if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
              else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
 
-        # 2. Konwersja typów (WZMOCNIONA)
+        # 2. Konwersja typów
         data['Close'] = data.get('Close', pd.Series(dtype='float64')).astype('float64')
         data['Low'] = data.get('Low', pd.Series(dtype='float64')).astype('float64')
         data['High'] = data.get('High', pd.Series(dtype='float64')).astype('float64')
@@ -214,7 +214,7 @@ def oblicz_wskaźniki_dodatkowe(data):
         # 3. SMA 
         data['SMA_Fast'] = ta.sma(data['Close'], length=SMA_FAST_VAL)
         data['SMA_Slow'] = ta.sma(data['Close'], length=SMA_SLOW_VAL)
-        data['SMA_Trend'] = ta.sma(data['Close'], length=SMA_TREND_FILTER_VAL) # 🚨 NOWY SMA
+        data['SMA_Trend'] = ta.sma(data['Close'], length=SMA_TREND_FILTER_VAL)
         
         data['SMA_Buy'] = (data['SMA_Fast'] > data['SMA_Slow']) & (data['SMA_Fast'].shift(1) <= data['SMA_Slow'].shift(1))
         data['SMA_Sell'] = (data['SMA_Fast'] < data['SMA_Slow']) & (data['SMA_Fast'].shift(1) >= data['SMA_Slow'].shift(1))
@@ -245,11 +245,11 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['MACD_Value'] = data[found_macd_name]
         data['MACDS_Value'] = data[found_signal_name]
         
-        # Logika MACD Crossover (do sygnałów filtrowanych)
+        # Logika MACD Crossover
         data['MACD_Buy'] = (data['MACD_Value'] > data['MACDS_Value']) & (data['MACD_Value'].shift(1) <= data['MACDS_Value'].shift(1))
         data['MACD_Sell'] = (data['MACD_Value'] < data['MACDS_Value']) & (data['MACD_Value'].shift(1) >= data['MACDS_Value'].shift(1))
         
-        # 🚨 MACD KIERUNEK (Używany jako filtr konfluencji)
+        # MACD KIERUNEK (Używany jako filtr konfluencji)
         data['MACD_Direction_Buy'] = data['MACD_Value'] >= data['MACDS_Value']
         data['MACD_Direction_Sell'] = data['MACD_Value'] <= data['MACDS_Value']
         
@@ -265,8 +265,6 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['MACD_Buy'] = data['MACD_Buy'].fillna(False) 
         data['MACD_Sell'] = data['MACD_Sell'].fillna(False) 
         
-        print(f"DEBUG: ROZMIAR KOŃCOWY (PRZED RETURN): {len(data)}. Nazwy MACD: {found_macd_name}, {found_signal_name}")
-        
         return data
         
     except Exception as e:
@@ -281,15 +279,14 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
         return
         
     macd_name = 'MACD_Value'
-    signal_name = 'MACDS_Value'
 
     kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend'] 
     
     try:
         if macd_name not in dane_ze_strategia.columns: return
         dane_czyste = dane_ze_strategia.dropna(subset=kolumny_do_czyszczenia_NaN).copy()
-    except KeyError as e:
-        print(f"🛑 BŁĄD DANYCH: Nie można znaleźć wszystkich kolumn wskaźników w DF dla {symbol} {interwal}.")
+    except KeyError:
+        # Ten błąd został już zalogowany w 'oblicz_wskaźniki_dodatkowe'
         return
     
     
@@ -300,16 +297,13 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     # Krok 2: POBRANIE OSTATNIEGO WIERSZA DANYCH
     ostatni_wiersz = dane_czyste.iloc[-1]
     
-    # 🚨 BLOK LOGOWANIA DANYCH 🚨
-    # ... (BLOK LOGOWANIA bez zmian)
-    
     # 3. FILTRY
     
     # Filtr Trendu (SMA 100)
     trend_filter_buy = ostatni_wiersz['Close'].item() > ostatni_wiersz['SMA_Trend'].item()
     trend_filter_sell = ostatni_wiersz['Close'].item() < ostatni_wiersz['SMA_Trend'].item()
     
-    # Filtr Konfluencji MACD (czy MACD jest powyżej/poniżej linii sygnału)
+    # Filtr Konfluencji MACD
     macd_conf_buy = ostatni_wiersz['MACD_Direction_Buy'].item() 
     macd_conf_sell = ostatni_wiersz['MACD_Direction_Sell'].item() 
 
