@@ -1,278 +1,378 @@
 import yfinance as yf
+import pandas as pd
 import time
-import requests
+import pandas_ta as ta
+from telegram import Bot
 import asyncio
-import os
-import random
-import json
-from datetime import datetime
-from collections import deque
+# --- Import wskaźników technicznych ---
+import pandas_ta as pta 
+# --------------------------------------
 
-# --- KONFIGURACJA BOTA ---
+# ==================== USTAWIENIA TELEGRAMA ====================
+TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZsRFW4qvXMGG2fzM0-DsO80"
+TELEGRAM_CHAT_ID = "6703750254"
+# =============================================================
 
-# 1. Zmień na swój token bota Telegram
-TELEGRAM_BOT_TOKEN = "WPISZ_SWÓJ_TOKEN_BOTA_TUTAJ" # Upewnij się, że to poprawny token!
-# 2. Zmień na swój ID czatu Telegram
-TELEGRAM_CHAT_ID = "WPISZ_SWÓJ_CHAT_ID_TUTAJ" # Upewnij się, że to Twój ID!
-
-# 3. Lista symboli do monitorowania (przykłady)
-# Pamiętaj: Wymagany jest suffix "=X" dla par Forex i ".L" dla akcji.
+# ----------------- USTAWIENIA MONITOROWANIA -----------------
 SYMBOLS = [
-    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", 
-    "USDCAD=X", "USDCHF=X", "EURGBP=X",
-    "GC=F", "SI=F", # Surowce (Złoto, Srebro)
-    "BTC-USD", # Kryptowaluty
-    "AAPL", "MSFT" # Akcje (bez sufixu)
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X", "NZDUSD=X",
+    "EURGBP=X", "EURJPY=X", "EURAUD=X", "EURCAD=X", "EURCHF=X", "EURNZD=X",
+    "GBPJPY=X", "GBPAUD=X", "GBPCAD=X", "GBPCHF=X", "GBPNZD=X",
+    "AUDJPY=X", "CADJPY=X", "CHFJPY=X", "NZDJPY=X",
+    "GC=F",          # Złoto
+    "SI=F",          # Srebro
+    "BTC-USD"        # Bitcoin
 ]
+FRAMES = ["1h", "15m", "5m"]        # LISTA INTERWAŁÓW
+STRATEGIES = ["SMA", "RSI", "MACD"] 
+TP_RATIO = 2.0                      # Współczynnik Risk:Reward dla TP (R:R 1:2)
+wait_time = 60 # 60 sekund = 1 minuta
+# ------------------------------------------------------------
 
-# 4. Interwał odświeżania danych ('1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo')
-# Błąd w logach sugeruje, że używasz '1m' - to jest bardzo obciążające dla serwera. 
-# Zmień to na np. '5m' lub '15m', jeśli nie potrzebujesz ultraszybkiej analizy.
-INTERWAL = '1m'
+# ----------------- USTAWIENIA PARAMETRÓW WSZKAŹNIKÓW -----------------
+SMA_FAST = 10
+SMA_SLOW = 20
+SMA_TREND_FILTER = 100 # 🚨 NOWY: Filtr trendu (długoterminowa średnia)
+RSI_PERIOD = 14 
+RSI_LOW_LEVEL = 30 
+RSI_HIGH_LEVEL = 70 
+# Parametry MACD
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+# --------------------------------------------------------------------
 
-# 5. Parametry strategii (Moving Averages)
-SHORT_MA_PERIOD = 20
-LONG_MA_PERIOD = 50
-
-# 6. Zarządzanie Ryzykiem
-# Współczynnik Risk:Reward (np. 1.5 oznacza TP jest 1.5x większy niż SL)
-RR_RATIO = 1.5 
-# Procent ATR użyty do określenia Stop Loss (np. 1.0 oznacza, że SL jest równy 1x ATR)
-ATR_MULTIPLIER = 1.0 
-# Okres dla obliczenia Average True Range (ATR)
-ATR_PERIOD = 14 
-
-
-# --- GLOBALNE ZMIENNE STANU ---
-# Używamy tej listy, aby zapobiec wielokrotnemu wysyłaniu tego samego sygnału
-SENT_SIGNALS = {} # Format: {symbol: last_signal_timestamp}
-# Używamy deque do przechowywania ostatnich logów (dla funkcji /logs)
-LOG_HISTORY = deque(maxlen=50)
-
-# --- FUNKCJE POMOCNICZE ---
-
-def log(message):
-    """Zapisuje wiadomość w konsoli i historii logów."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] {message}"
-    print(log_entry)
-    LOG_HISTORY.append(log_entry)
-
-def send_telegram_message(text):
-    """Wysyła wiadomość do Telegrama."""
-    # Szybkie sprawdzenie, czy konfiguracja została zmieniona
-    if TELEGRAM_BOT_TOKEN == "WPISZ_SWÓJ_TOKEN_BOTA_TUTAJ" or TELEGRAM_CHAT_ID == "WPISZ_SWÓJ_CHAT_ID_TUTAJ":
-        log("UWAGA: Nie skonfigurowano poprawnie tokenu lub ID czatu Telegram! Wiadomość nie została wysłana.")
-        return
-        
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': text,
-        'parse_mode': 'Markdown' 
-    }
-    
+async def wyslij_alert(alert_text):
+    """Wysyła alert za pomocą Telegrama asynchronicznie."""
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status() 
-    except requests.exceptions.RequestException as e:
-        log(f"Błąd wysyłania wiadomości Telegram: {e}")
-
-def calculate_pips(symbol, value):
-    """Oblicza liczbę pipsów dla danej wartości cenowej."""
-    
-    # 1. Określenie precyzji (liczby miejsc po przecinku)
-    if "JPY" in symbol or "GC=F" in symbol:
-        # Pary z JPY i niektóre surowce (Złoto) mają 2 lub 3 miejsca (np. 123.456). Pip = 0.01.
-        pip_value = 0.01
-        multiplier = 100
-    elif "BTC" in symbol or symbol not in ["EURUSD=X", "GBPUSD=X", "AUDUSD=X"]:
-         # Kryptowaluty, akcje, inne surowce - używamy stałej wartości pipsa (0.0001) dla ujednolicenia lub 0.01 dla ułamków
-        if symbol in ["SI=F"]: # Srebro
-             pip_value = 0.01 
-             multiplier = 100
-        elif symbol in ["AAPL", "MSFT"]: # Akcje
-             pip_value = 0.01 
-             multiplier = 100
-        elif "BTC" in symbol: # Kryptowaluty
-             # Dla uproszczenia (zbyt duża zmienność) - przyjmujemy, że 1 USD to 1 pip, ale to b. duże uproszczenie
-             pip_value = 1.0
-             multiplier = 1.0
-        else:
-            # Domyślnie dla większości walut (5-cyfrowe, pip = 0.0001)
-            pip_value = 0.0001
-            multiplier = 10000
-    else:
-        # Główne pary (EURUSD, GBPUSD, AUDUSD itp.) - 5 cyfr po przecinku, pip = 0.0001
-        pip_value = 0.0001
-        multiplier = 10000
-    
-    # Obliczenie wartości w pipsach (zaokrąglone do 2 miejsc)
-    return round(value * multiplier, 2)
-
-
-# --- GŁÓWNA LOGIKA HANDLOWA ---
-
-def get_data(symbol, interwal):
-    """
-    Pobiera dane historyczne dla symbolu.
-    DODANO FIX DLA PROBLEMU Z DANYMI '1m'
-    """
-    
-    # Ustawienie okresu pobierania: 7 dni dla 1m, 60 dni dla reszty (aby uniknąć błędu API)
-    if interwal == '1m':
-        period = "7d"  # BEZPIECZNY OKRES DLA DANYCH 1-MINUTOWYCH
-    else:
-        period = "60d"
-        
-    try:
-        # Linia 209 z logów (teraz 217)
-        data = yf.download(symbol, interval=interwal, period=period, progress=False) 
-        
-        if data.empty:
-            log(f"Brak danych dla symbolu {symbol}. Pomijanie.")
-            return None
-        return data
+        # Bot nie jest zdefiniowany globalnie, więc użyjemy instancji globalnej
+        await Bot(token=TELEGRAM_BOT_TOKEN).send_message(
+            chat_id=TELEGRAM_CHAT_ID, 
+            text=alert_text, 
+            parse_mode='HTML'
+        )
+        print("✅ ALERT WYSŁANY DO TELEGRAMA: " + alert_text)
     except Exception as e:
-        log(f"Nie udało się pobrać danych dla {symbol}: {e}")
-        return None
+        print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
 
-def calculate_indicators(data):
-    """Oblicza średnie kroczące i ATR."""
-    # Średnie kroczące
-    data['MA_Short'] = data['Close'].rolling(window=SHORT_MA_PERIOD).mean()
-    data['MA_Long'] = data['Close'].rolling(window=LONG_MA_PERIOD).mean()
+def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
+    """Formatuje i wysyła ładniejszy i bardziej szczegółowy alert sygnału."""
     
-    # Average True Range (ATR)
-    # True Range (TR)
-    data['High-Low'] = data['High'] - data['Low']
-    data['High-PrevClose'] = abs(data['High'] - data['Close'].shift(1))
-    data['Low-PrevClose'] = abs(data['Low'] - data['Close'].shift(1))
-    data['TR'] = data[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
-    # ATR (EMA based)
-    data['ATR'] = data['TR'].ewm(span=ATR_PERIOD, adjust=False).mean()
+    # Krok 1: Bezpieczne pobranie kluczowych danych
+    price = wiersz['Close'].item()
     
-    return data
+    # 🚨 POBIERANIE SL/TP
+    sl_low_item = wiersz.get('RSI_SL_Low', pd.NA).item() if wiersz.get('RSI_SL_Low', pd.NA) is not pd.NA else None
+    sl_high_item = wiersz.get('RSI_SL_High', pd.NA).item() if wiersz.get('RSI_SL_High', pd.NA) is not pd.NA else None
 
-def check_for_signal(symbol, data):
-    """
-    Sprawdza, czy wystąpiło przecięcie średnich kroczących (sygnał kupna/sprzedaży).
-    """
-    # Upewnij się, że mamy wystarczającą ilość danych do obliczeń
-    if len(data) < LONG_MA_PERIOD + ATR_PERIOD:
-        log(f"Niewystarczająca ilość danych dla {symbol}. Wymagane co najmniej {LONG_MA_PERIOD + ATR_PERIOD} świec.")
-        return None
-
-    # Pobranie ostatniego w pełni ukształtowanego słupka (przedostatni w danych)
-    last_idx = -2
+    sl_val = None
     
-    # Wartości dla ostatniego w pełni ukształtowanego słupka
-    ma_short_prev = data['MA_Short'].iloc[last_idx - 1]
-    ma_long_prev = data['MA_Long'].iloc[last_idx - 1]
-    
-    # Wartości dla obecnego, w pełni ukształtowanego słupka
-    ma_short_curr = data['MA_Short'].iloc[last_idx]
-    ma_long_curr = data['MA_Long'].iloc[last_idx]
-    close_price = data['Close'].iloc[last_idx]
-    atr_value = data['ATR'].iloc[last_idx]
+    if kierunek == "BUY":
+        emoji = "🟢"
+        sl_val = sl_low_item
+    else: # SELL
+        emoji = "🔴"
+        sl_val = sl_high_item
 
-    signal = None
+    # Krok 2: Obliczanie SL i TP
+    sl_text = "N/A"
+    tp_text = "N/A"
+    pips_do_wziecia_text = "N/A" # 🚨 NOWA ZMIENNA
 
-    # SYGNAŁ KUPNA (BUY)
-    # Krótka MA (20) przecina Długą MA (50) od dołu do góry
-    if ma_short_prev <= ma_long_prev and ma_short_curr > ma_long_curr:
-        signal = "KUPNO (BUY)"
-        # Ustalenie poziomów SL/TP
-        stop_loss = round(close_price - (atr_value * ATR_MULTIPLIER), 5)
-        take_profit = round(close_price + (atr_value * ATR_MULTIPLIER * RR_RATIO), 5)
-        action = "Long (Kup)"
-        
-    # SYGNAŁ SPRZEDAŻY (SELL)
-    # Krótka MA (20) przecina Długą MA (50) od góry do dołu
-    elif ma_short_prev >= ma_long_prev and ma_short_curr < ma_long_curr:
-        signal = "SPRZEDAŻ (SELL)"
-        # Ustalenie poziomów SL/TP
-        stop_loss = round(close_price + (atr_value * ATR_MULTIPLIER), 5)
-        take_profit = round(close_price - (atr_value * ATR_MULTIPLIER * RR_RATIO), 5)
-        action = "Short (Sprzedaj)"
-    
-    # Jeśli znaleziono sygnał
-    if signal:
-        # Obliczenie pipsów do SL i TP
-        sl_diff = abs(stop_loss - close_price)
-        tp_diff = abs(take_profit - close_price)
-        sl_pips = calculate_pips(symbol, sl_diff)
-        tp_pips = calculate_pips(symbol, tp_diff)
-        
-        # Sprawdzenie, czy sygnał nie został już wysłany w tej świecy
-        current_time = data.index[last_idx]
-        
-        if symbol not in SENT_SIGNALS or SENT_SIGNALS[symbol] < current_time:
-            SENT_SIGNALS[symbol] = current_time
+    if sl_val is not None:
+        try:
+            sl_text = f"{sl_val:.5f}"
             
-            # Formatuje i zwraca wiadomość do Telegrama
-            message = (
-                f"🚨 *NOWY SYGNAŁ HANDLOWY - {INTERWAL}* 🚨\n\n"
-                f"📊 *PARA WALUTOWA/AKCJA:* `{symbol}`\n"
-                f"📈 *AKCJA:* {action} ({signal})\n"
-                f"💰 *CENA WEJŚCIA:* {close_price:.5f} (Zamknięcie świecy {current_time.strftime('%Y-%m-%d %H:%M')})\n"
-                f"🛑 *STOP LOSS:* {stop_loss:.5f} ({sl_pips} pips)\n"
-                f"🎯 *TAKE PROFIT (R:R {RR_RATIO}):* {take_profit:.5f} ({tp_pips} pips)\n"
-                f"---"
-            )
-            return message
-        else:
-            log(f"Sygnał dla {symbol} w czasie {current_time} został już wysłany. Pomijanie.")
-            return None
+            # Obliczenie ryzyka/nagrody
+            if kierunek == "BUY":
+                risk = price - sl_val
+                tp_val = price + risk * TP_RATIO
+                pips_do_wziecia = (tp_val - price) * 10000 # Założenie 4-cyfrowych par (lub 2 dla JPY)
+            else:
+                risk = sl_val - price
+                tp_val = price - risk * TP_RATIO
+                pips_do_wziecia = (price - tp_val) * 10000 # Założenie 4-cyfrowych par (lub 2 dla JPY)
 
-    return None
+            tp_text = f"{tp_val:.5f}"
 
-def main_loop():
-    """Główna pętla programu."""
-    log("Inicjalizacja bota. Rozpoczynanie pętli głównej...")
+            # 🚨 Poprawa obliczeń pipsów dla różnych instrumentów
+            if "JPY" in symbol:
+                # Pary JPY mają 2 miejsca dziesiętne (zazwyczaj mnożnik 100)
+                pips_do_wziecia = (abs(tp_val - price) * 100).round(1)
+            elif "USD" in symbol or "EUR" in symbol or "GBP" in symbol or "AUD" in symbol or "CHF" in symbol or "NZD" in symbol:
+                # Standardowe pary walutowe (4/5 miejsc, mnożnik 10000)
+                pips_do_wziecia = (abs(tp_val - price) * 10000).round(1)
+            else:
+                # Dla surowców/krypto - pipsy są mniej standardowe, użyjemy różnicy w punktach (Price Points)
+                pips_do_wziecia = abs(tp_val - price).round(2)
+                
+            pips_do_wziecia_text = f"{pips_do_wziecia:.1f}"
+
+        except:
+            sl_text = "Błąd SL"
+            tp_text = "Błąd TP"
+            pips_do_wziecia_text = "Błąd Obliczenia"
+
+    # Krok 3: Szczegóły wskaźników (dodanie danych kontekstowych)
+    # Użycie tagu <b> dla spójności HTML
+    details = f"\n\n⚙️ <b>Szczegóły Wskaźników ({strategia})</b>:"
     
-    # Wymuś wstępne wysłanie wiadomości na start
-    send_telegram_message(
-        f"🤖 Bot handlowy WŁĄCZONY.\n"
-        f"Monitorowane interwały: `{INTERWAL}`.\n"
-        f"Liczba par: {len(SYMBOLS)}."
+    if "SMA" in strategia:
+        sma_fast = wiersz.get('SMA_Fast', pd.NA).item() if wiersz.get('SMA_Fast', pd.NA) is not pd.NA else "N/A"
+        sma_slow = wiersz.get('SMA_Slow', pd.NA).item() if wiersz.get('SMA_Slow', pd.NA) is not pd.NA else "N/A"
+        sma_trend = wiersz.get('SMA_Trend', pd.NA).item() if wiersz.get('SMA_Trend', pd.NA) is not pd.NA else "N/A"
+        details += f"\n- SMA {SMA_FAST}/{SMA_SLOW}: <code>{sma_fast:.5f}</code> / <code>{sma_slow:.5f}</code>"
+        details += f"\n- Filtr Trendu (SMA {SMA_TREND_FILTER}): <code>{sma_trend:.5f}</code>"
+        
+    if "RSI" in strategia:
+        rsi_val = wiersz.get('RSI', pd.NA).item() if wiersz.get('RSI', pd.NA) is not pd.NA else "N/A"
+        details += f"\n- RSI: <code>{rsi_val:.2f}</code> (Buy/Sell: {RSI_LOW_LEVEL}/{RSI_HIGH_LEVEL})"
+
+    # MACD 
+    if "MACD" in strategia or "Cnf" in strategia: 
+        macd_name = 'MACD_Value'
+        signal_name = 'MACDS_Value'
+        
+        macd_val = wiersz.get(macd_name, pd.NA).item() if wiersz.get(macd_name, pd.NA) is not pd.NA else "N/A"
+        signal_val = wiersz.get(signal_name, pd.NA).item() if wiersz.get(signal_name, pd.NA) is not pd.NA else "N/A"
+        details += f"\n- MACD/Signal: <code>{macd_val:.5f}</code> / <code>{signal_val:.5f}</code>"
+        
+    # Krok 4: Składanie gotowej wiadomości (Utrzymana kolejność i pogrubienie liczb)
+    alert_text = (
+        f"{emoji} <b>NOWY SYGNAŁ {kierunek}</b> ({strategia}) {emoji}\n"
+        f"————————————————————\n"
+        f"📊 <b>PARA:</b> <code>{symbol} / {interwal}</code>\n"
+        f"\n"
+        # 1. WEJŚCIE (bold)
+        f"💰 <b>WEJŚCIE:</b> <b>{price:.5f}</b>\n" 
+        # 🚨 NOWA LINIA Z INFORMACJĄ O PIPSACH
+        f"🎯 <b>PIPSY DO WZIĘCIA:</b> <b>{pips_do_wziecia_text}</b> pipsów\n"
+        # 2. TAKE PROFIT (bold)
+        f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b>\n" 
+        # 3. STOP LOSS (bold)
+        f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> ({'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy)\n" 
+        f"{details}"
     )
 
-    while True:
-        log("--- Rozpoczynanie cyklu skanowania ---")
+    # Wysłanie alertu
+    asyncio.run(wyslij_alert(alert_text))
+
+
+def pobierz_dane(symbol, interwal):
+    """Pobiera historyczne dane OHLC z yfinance, bez agresywnego wstępnego czyszczenia."""
+    try:
+        data = yf.download(symbol, interval=interwal, period="60d", progress=False)
+        if data.empty:
+            return pd.DataFrame()  
+        print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")    
+        return data
         
-        # Losowa kolejność symboli (aby uniknąć problemu z limitem zapytań API)
-        random.shuffle(SYMBOLS)
+    except Exception as e:
+        print(f"❌ BŁĄD POBIERANIA DANYCH dla {symbol} ({interwal}): {e}")
+        return pd.DataFrame()
+
+def oblicz_wskaźniki_dodatkowe(data):
+    """Oblicza wskaźniki za pomocą biblioteki pandas_ta, z gwarantowaną normalizacją kolumn."""
+    
+    data = data.copy()
+    
+    # --- Pobieranie wartości globalnych ---
+    SMA_FAST_VAL = globals().get('SMA_FAST', 10)
+    SMA_SLOW_VAL = globals().get('SMA_SLOW', 20)
+    SMA_TREND_FILTER_VAL = globals().get('SMA_TREND_FILTER', 100) # 🚨 NOWA WARTOŚĆ
+    RSI_PERIOD_VAL = globals().get('RSI_PERIOD', 14)
+    
+    MACD_FAST_VAL = globals().get('MACD_FAST', 12)
+    MACD_SLOW_VAL = globals().get('MACD_SLOW', 26)
+    MACD_SIGNAL_VAL = globals().get('MACD_SIGNAL', 9)
+
+    try:
+        # 1. NORMALIZACJA KOLUMN
+        new_columns = []
+        for col in data.columns:
+            if isinstance(col, tuple): col_name = col[0] 
+            elif isinstance(col, str) and col.startswith("('"):
+                try: col_name = eval(col)[0] 
+                except: col_name = col
+            else: col_name = col
+            new_columns.append(str(col_name).title())
+
+        data.columns = new_columns
         
-        for symbol in SYMBOLS:
-            log(f"Analiza symbolu: {symbol}")
-            
-            # 1. Pobierz dane
-            data = get_data(symbol, INTERWAL)
-            if data is None:
-                continue
+        if 'Close' not in data.columns:
+             if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
+             else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
 
-            # 2. Oblicz wskaźniki
-            data = calculate_indicators(data)
-            
-            # 3. Sprawdź sygnał
-            signal_message = check_for_signal(symbol, data)
-            
-            # 4. Wyślij alert, jeśli sygnał jest nowy
-            if signal_message:
-                log(f"ZNALEZIONO SYGNAŁ dla {symbol}. Wysyłanie alertu...")
-                send_telegram_message(signal_message)
-            
-            # Odczekaj krótko między żądaniami, aby zmniejszyć obciążenie API
-            time.sleep(1) 
+        # 2. Konwersja typów (WZMOCNIONA)
+        data['Close'] = data.get('Close', pd.Series(dtype='float64')).astype('float64')
+        data['Low'] = data.get('Low', pd.Series(dtype='float64')).astype('float64')
+        data['High'] = data.get('High', pd.Series(dtype='float64')).astype('float64')
 
-        log("Cykl skanowania zakończony. Oczekiwanie na następny cykl...")
-        # Czas oczekiwania przed kolejnym cyklem (np. 60 sekund)
-        time.sleep(60) 
+        if data['Close'].empty or data['Close'].isnull().all():
+            raise ValueError(f"Kolumna 'Close' jest pusta po normalizacji. Dostępne kolumny: {data.columns.tolist()}")
 
+        # 3. SMA 
+        data['SMA_Fast'] = ta.sma(data['Close'], length=SMA_FAST_VAL)
+        data['SMA_Slow'] = ta.sma(data['Close'], length=SMA_SLOW_VAL)
+        data['SMA_Trend'] = ta.sma(data['Close'], length=SMA_TREND_FILTER_VAL) # 🚨 NOWY SMA
+        
+        data['SMA_Buy'] = (data['SMA_Fast'] > data['SMA_Slow']) & (data['SMA_Fast'].shift(1) <= data['SMA_Slow'].shift(1))
+        data['SMA_Sell'] = (data['SMA_Fast'] < data['SMA_Slow']) & (data['SMA_Fast'].shift(1) >= data['SMA_Slow'].shift(1))
+        
+        # 4. RSI 
+        data['RSI'] = ta.rsi(data['Close'], length=RSI_PERIOD_VAL)
+        
+        RSI_LOW_LEVEL_VAL = globals().get('RSI_LOW_LEVEL', 30)
+        RSI_HIGH_LEVEL_VAL = globals().get('RSI_HIGH_LEVEL', 70)
+        data['RSI_Buy'] = (data['RSI'].shift(1) < RSI_LOW_LEVEL_VAL) & (data['RSI'] >= RSI_LOW_LEVEL_VAL)
+        data['RSI_Sell'] = (data['RSI'].shift(1) > RSI_HIGH_LEVEL_VAL) & (data['RSI'] <= RSI_HIGH_LEVEL_VAL)
+
+        # 5. MACD 
+        data.ta.macd(fast=MACD_FAST_VAL, slow=MACD_SLOW_VAL, signal=MACD_SIGNAL_VAL, append=True)
+        
+        macd_signature = f'_{MACD_FAST_VAL}_{MACD_SLOW_VAL}_{MACD_SIGNAL_VAL}'
+        
+        found_macd_name = next((col for col in data.columns if macd_signature in col and col.lower().startswith('macd_') and 'h_' not in col.lower()), None)
+        found_signal_name = next((col for col in data.columns if macd_signature in col and col.lower().startswith('macds_')), None)
+        
+        if found_macd_name is None or found_signal_name is None:
+             found_macd_name = next((col for col in data.columns if col.lower().startswith('macd_') and 'h_' not in col.lower()), None)
+             found_signal_name = next((col for col in data.columns if col.lower().startswith('macds_')), None)
+             
+             if found_macd_name is None or found_signal_name is None:
+                 raise ValueError(f"Kolumny MACD/MACDS nie zostały utworzone poprawnie. Dostępne kolumny: {data.columns.tolist()}")
+
+        data['MACD_Value'] = data[found_macd_name]
+        data['MACDS_Value'] = data[found_signal_name]
+        
+        # Logika MACD Crossover (do sygnałów filtrowanych)
+        data['MACD_Buy'] = (data['MACD_Value'] > data['MACDS_Value']) & (data['MACD_Value'].shift(1) <= data['MACDS_Value'].shift(1))
+        data['MACD_Sell'] = (data['MACD_Value'] < data['MACDS_Value']) & (data['MACD_Value'].shift(1) >= data['MACDS_Value'].shift(1))
+        
+        # 🚨 MACD KIERUNEK (Używany jako filtr konfluencji)
+        data['MACD_Direction_Buy'] = data['MACD_Value'] >= data['MACDS_Value']
+        data['MACD_Direction_Sell'] = data['MACD_Value'] <= data['MACDS_Value']
+        
+        # SL/TP bazujący na poprzedniej świecy
+        data['RSI_SL_Low'] = data['Low'].shift(1)
+        data['RSI_SL_High'] = data['High'].shift(1)
+        
+        # 6. Dodajemy kolumny 'Buy'/'Sell' jako typ Boolean (zabezpieczenie)
+        data['SMA_Buy'] = data['SMA_Buy'].fillna(False)
+        data['SMA_Sell'] = data['SMA_Sell'].fillna(False)
+        data['RSI_Buy'] = data['RSI_Buy'].fillna(False)
+        data['RSI_Sell'] = data['RSI_Sell'].fillna(False)
+        data['MACD_Buy'] = data['MACD_Buy'].fillna(False) 
+        data['MACD_Sell'] = data['MACD_Sell'].fillna(False) 
+        
+        print(f"DEBUG: ROZMIAR KOŃCOWY (PRZED RETURN): {len(data)}. Nazwy MACD: {found_macd_name}, {found_signal_name}")
+        
+        return data
+        
+    except Exception as e:
+        print("🛑 BŁĄD W OBLICZANIU WSKAŹNIKÓW - SMA/RSI/MACD!")
+        print(f"PEŁNY BŁĄD: {e}") 
+        return pd.DataFrame()
+
+def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
+    """Iteruje przez wszystkie sygnały w ostatniej świecy z uwzględnieniem filtracji."""
+    
+    if dane_ze_strategia.empty:
+        return
+        
+    macd_name = 'MACD_Value'
+    signal_name = 'MACDS_Value'
+
+    kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend'] 
+    
+    try:
+        if macd_name not in dane_ze_strategia.columns: return
+        dane_czyste = dane_ze_strategia.dropna(subset=kolumny_do_czyszczenia_NaN).copy()
+    except KeyError as e:
+        print(f"🛑 BŁĄD DANYCH: Nie można znaleźć wszystkich kolumn wskaźników w DF dla {symbol} {interwal}.")
+        return
+    
+    
+    if dane_czyste.empty:
+        print(f"OSTRZEŻENIE: Brak wystarczającej ilości danych do obliczenia wskaźników dla {symbol} {interwal}.")
+        return
+
+    # Krok 2: POBRANIE OSTATNIEGO WIERSZA DANYCH
+    ostatni_wiersz = dane_czyste.iloc[-1]
+    
+    # 🚨 BLOK LOGOWANIA DANYCH 🚨
+    # ... (BLOK LOGOWANIA bez zmian)
+    
+    # 3. FILTRY
+    
+    # Filtr Trendu (SMA 100)
+    trend_filter_buy = ostatni_wiersz['Close'].item() > ostatni_wiersz['SMA_Trend'].item()
+    trend_filter_sell = ostatni_wiersz['Close'].item() < ostatni_wiersz['SMA_Trend'].item()
+    
+    # Filtr Konfluencji MACD (czy MACD jest powyżej/poniżej linii sygnału)
+    macd_conf_buy = ostatni_wiersz['MACD_Direction_Buy'].item() 
+    macd_conf_sell = ostatni_wiersz['MACD_Direction_Sell'].item() 
+
+    
+    # 4. SPRAWDZENIE SYGNAŁÓW Z NOWYMI WARUNKAMI
+
+    # SPRAWDZENIE SMA Crossover (Wymaga Trendu i Konfluencji MACD)
+    try:
+        if ostatni_wiersz['SMA_Buy'].item() and trend_filter_buy and macd_conf_buy:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "BUY")
+            
+        if ostatni_wiersz['SMA_Sell'].item() and trend_filter_sell and macd_conf_sell: 
+            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "SELL")
+    except KeyError:
+        pass 
+        
+    # SPRAWDZENIE RSI (Wymaga Trendu i Konfluencji MACD)
+    try:
+        if ostatni_wiersz['RSI_Buy'].item() and trend_filter_buy and macd_conf_buy: 
+            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "BUY")
+            
+        if ostatni_wiersz['RSI_Sell'].item() and trend_filter_sell and macd_conf_sell:
+            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "SELL")
+    except KeyError:
+        pass 
+        
+    # SPRAWDZENIE MACD Crossover (Wymaga Filtracji Trendu)
+    try:
+        if ostatni_wiersz['MACD_Buy'].item() and trend_filter_buy:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "BUY")
+            
+        if ostatni_wiersz['MACD_Sell'].item() and trend_filter_sell:
+            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "SELL")
+    except KeyError:
+        pass
+        
+    return
+    
+# ==================== URUCHOMIENIE PĘTLI 24/7 ====================
 if __name__ == "__main__":
-    # Inicjalizacja: Używamy asynchroniczności, aby uniknąć problemów z blokowaniem (opcjonalnie)
-    # W prostych botach na PythonAnywhere wystarczy zwykła pętla while True.
-    main_loop()
-
-
+    
+    bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
+    
+    print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
+    asyncio.run(wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów."))
+    
+    while True:
+        print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
+        
+        for symbol in SYMBOLS: 
+            for frame in FRAMES:
+                try:
+                    dane = pobierz_dane(symbol, frame)
+                    if dane.empty: continue
+                    dane_ze_strategia = oblicz_wskaźniki_dodatkowe(dane)
+                    
+                    print(f"DEBUG: Rozmiar DF dla {symbol} na {frame}: {len(dane_ze_strategia)}")
+                    
+                    if not dane_ze_strategia.empty:
+                        print(f"-> Sprawdzam sygnały dla {symbol} na {frame}") 
+                        sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, frame)
+                        
+                except Exception as e:
+                    print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
+        
+        time.sleep(wait_time)
