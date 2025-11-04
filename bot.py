@@ -269,3 +269,4 @@ if __name__ == "__main__":
     # Inicjalizacja: Używamy asynchroniczności, aby uniknąć problemów z blokowaniem (opcjonalnie)
     # W prostych botach na PythonAnywhere wystarczy zwykła pętla while True.
     main_loop()
+
