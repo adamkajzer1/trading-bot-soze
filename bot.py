@@ -4,13 +4,14 @@ import time
 import pandas_ta as ta
 from telegram import Bot
 import asyncio
+import requests # DODANY IMPORT
 # --- Import wskaźników technicznych ---
 import pandas_ta as pta 
 # --------------------------------------
 
 # ==================== USTAWIENIA TELEGRAMA ====================
-# WAŻNE! Zmień ten token na nowy, wygenerowany w BotFather.
-TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZsRFW4qvXMGG2fzM0-DsO80" 
+# WAŻNE! Upewnij się, że token jest poprawny i aktywny.
+TELEGRAM_BOT_TOKEN = "TWOJ_OBECNY_TOKEN_TELEGRAMA" 
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================
 
@@ -42,6 +43,28 @@ MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 # --------------------------------------------------------------------
+
+# ==================== FUNKCJA TESTOWA POŁĄCZENIA ====================
+def test_telegram_connection(token):
+    """Testuje, czy token jest poprawny za pomocą standardowego API Telegrama."""
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if response.status_code == 200 and data.get('ok'):
+            username = data['result']['username']
+            print(f"✅ TEST POŁĄCZENIA API: Token jest PRAWIDŁOWY. Bot: @{username}")
+            return True
+        else:
+            # Wypisz odpowiedź API, aby zdiagnozować błąd
+            print(f"❌ TEST POŁĄCZENIA API: Token zwrócił błąd. Status: {response.status_code}, Odpowiedź: {data}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ TEST POŁĄCZENIA API: Wystąpił błąd sieciowy lub timeout: {e}")
+        return False
+# ====================================================================
 
 async def wyslij_alert(alert_text):
     """Wysyła alert za pomocą Telegrama asynchronicznie."""
@@ -345,6 +368,14 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
 # ==================== URUCHOMIENIE PĘTLI 24/7 ====================
 if __name__ == "__main__":
     
+    # KROK 1: TEST POŁĄCZENIA PRZED URUCHOMIENIEM
+    is_connected = test_telegram_connection(TELEGRAM_BOT_TOKEN)
+    
+    if not is_connected:
+        print("🛑 KRYTYCZNY BŁĄD: Token Telegrama jest niepoprawny lub bot jest zablokowany. Popraw go przed kontynuacją.")
+        # Zatrzymujemy działanie, aby uniknąć spamowania logów błędami
+        exit() 
+        
     bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
     
     print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
@@ -370,3 +401,4 @@ if __name__ == "__main__":
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
         time.sleep(wait_time)
+
