@@ -4,14 +4,17 @@ import time
 import pandas_ta as ta
 from telegram import Bot
 import asyncio
+import requests
+import os 
+
 # --- Import wskaźników technicznych ---
 import pandas_ta as pta 
 # --------------------------------------
 
-# ==================== USTAWIENIA TELEGRAMA ====================
+# ==================== USTAWIENIA TELEGRAMA (CZYTANE Z ENV) ====================
 TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80"
 TELEGRAM_CHAT_ID = "6703750254"
-# =============================================================
+# =============================================================================
 
 # ----------------- USTAWIENIA MONITOROWANIA -----------------
 SYMBOLS = [
@@ -19,9 +22,9 @@ SYMBOLS = [
     "EURGBP=X", "EURJPY=X", "EURAUD=X", "EURCAD=X", "EURCHF=X", "EURNZD=X",
     "GBPJPY=X", "GBPAUD=X", "GBPCAD=X", "GBPCHF=X", "GBPNZD=X",
     "AUDJPY=X", "CADJPY=X", "CHFJPY=X", "NZDJPY=X",
-    "GC=F",         # Złoto
-    "SI=F",         # Srebro
-    "BTC-USD"       # Bitcoin
+    "GC=F",          # Złoto
+    "SI=F",          # Srebro
+    "BTC-USD"        # Bitcoin
 ]
 FRAMES = ["1h", "15m", "5m"]        # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
@@ -32,7 +35,7 @@ wait_time = 60 # 60 sekund = 1 minuta
 # ----------------- USTAWIENIA PARAMETRÓW WSZKAŹNIKÓW -----------------
 SMA_FAST = 10
 SMA_SLOW = 20
-SMA_TREND_FILTER = 100 # 🚨 NOWY: Filtr trendu (długoterminowa średnia)
+SMA_TREND_FILTER = 100 # Filtr trendu (długoterminowa średnia)
 RSI_PERIOD = 14 
 RSI_LOW_LEVEL = 30 
 RSI_HIGH_LEVEL = 70 
@@ -41,6 +44,30 @@ MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 # --------------------------------------------------------------------
+
+# ==================== FUNKCJA POMOCNICZA DO OBLICZANIA PIPSÓW ====================
+def oblicz_pipsy(symbol, roznica):
+    """
+    Oblicza różnicę cenową wyrażoną w pipsach.
+    Standardowa pips to 0.0001 dla większości par i 0.01 dla par z JPY.
+    """
+    if "JPY" in symbol:
+        # Pips dla par JPY jest na drugim miejscu po przecinku (0.01)
+        pips_val = 0.01
+    elif "BTC" in symbol or "GC=F" in symbol or "SI=F" in symbol:
+        # Dla towarów i krypto używamy po prostu standardowych jednostek
+        # i nie nazywamy ich pipsami, aby uniknąć pomyłek, 
+        # ale wyświetlamy 2 miejsca po przecinku.
+        return f"{abs(roznica):.2f} (Jednostek)"
+    else:
+        # Pips dla większości par Forex jest na czwartym miejscu po przecinku (0.0001)
+        pips_val = 0.0001
+        
+    pips = abs(roznica) / pips_val
+    return f"{pips:.1f} (Pipsów)"
+
+# =================================================================================
+
 
 async def wyslij_alert(alert_text):
     """Wysyła alert za pomocą Telegrama asynchronicznie."""
@@ -61,7 +88,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     # Krok 1: Bezpieczne pobranie kluczowych danych
     price = wiersz['Close'].item()
     
-    # 🚨 POBIERANIE SL/TP
+    # POBIERANIE SL/TP
     sl_low_item = wiersz.get('RSI_SL_Low', pd.NA).item() if wiersz.get('RSI_SL_Low', pd.NA) is not pd.NA else None
     sl_high_item = wiersz.get('RSI_SL_High', pd.NA).item() if wiersz.get('RSI_SL_High', pd.NA) is not pd.NA else None
 
@@ -78,17 +105,27 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     sl_text = "N/A"
     tp_text = "N/A"
     
+    # NOWE ZMIENNE DLA WYLICZENIA PIPSÓW
+    pips_risk = "N/A"
+    pips_reward = "N/A"
+
     if sl_val is not None:
         try:
             sl_text = f"{sl_val:.5f}"
             
             # Obliczenie ryzyka/nagrody
             if kierunek == "BUY":
-                risk = price - sl_val
-                tp_val = price + risk * TP_RATIO
-            else:
-                risk = sl_val - price
-                tp_val = price - risk * TP_RATIO
+                risk_roznica = price - sl_val
+                tp_val = price + risk_roznica * TP_RATIO
+                reward_roznica = tp_val - price
+            else: # SELL
+                risk_roznica = sl_val - price
+                tp_val = price - risk_roznica * TP_RATIO
+                reward_roznica = price - tp_val
+
+            # OBLICZANIE PIPSÓW
+            pips_risk = oblicz_pipsy(symbol, risk_roznica)
+            pips_reward = oblicz_pipsy(symbol, reward_roznica)
                 
             tp_text = f"{tp_val:.5f}"
         except:
@@ -96,7 +133,6 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
             tp_text = "Błąd TP"
 
     # Krok 3: Szczegóły wskaźników (dodanie danych kontekstowych)
-    # Użycie tagu <b> dla spójności HTML
     details = f"\n\n⚙️ <b>Szczegóły Wskaźników ({strategia})</b>:"
     
     if "SMA" in strategia:
@@ -119,7 +155,7 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         signal_val = wiersz.get(signal_name, pd.NA).item() if wiersz.get(signal_name, pd.NA) is not pd.NA else "N/A"
         details += f"\n- MACD/Signal: <code>{macd_val:.5f}</code> / <code>{signal_val:.5f}</code>"
         
-    # Krok 4: Składanie gotowej wiadomości (Utrzymana kolejność i pogrubienie liczb)
+    # Krok 4: Składanie gotowej wiadomości
     alert_text = (
         f"{emoji} <b>NOWY SYGNAŁ {kierunek}</b> ({strategia}) {emoji}\n"
         f"————————————————————\n"
@@ -127,10 +163,11 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         f"\n"
         # 1. WEJŚCIE (bold)
         f"💰 <b>WEJŚCIE:</b> <b>{price:.5f}</b>\n" 
-        # 2. TAKE PROFIT (bold)
-        f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b>\n" 
-        # 3. STOP LOSS (bold)
-        f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> ({'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy)\n" 
+        # 2. TAKE PROFIT (bold) + Pipsy
+        f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b> (<code>{pips_reward}</code>)\n" 
+        # 3. STOP LOSS (bold) + Pipsy
+        f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> (<code>{pips_risk}</code>)\n" 
+        f"   {'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy\n"
         f"{details}"
     )
 
@@ -144,7 +181,7 @@ def pobierz_dane(symbol, interwal):
         data = yf.download(symbol, interval=interwal, period="60d", progress=False)
         if data.empty:
             return pd.DataFrame()  
-        print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")   
+        print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")    
         return data
         
     except Exception as e:
@@ -159,9 +196,8 @@ def oblicz_wskaźniki_dodatkowe(data):
     # --- Pobieranie wartości globalnych ---
     SMA_FAST_VAL = globals().get('SMA_FAST', 10)
     SMA_SLOW_VAL = globals().get('SMA_SLOW', 20)
-    SMA_TREND_FILTER_VAL = globals().get('SMA_TREND_FILTER', 100) # 🚨 NOWA WARTOŚĆ
+    SMA_TREND_FILTER_VAL = globals().get('SMA_TREND_FILTER', 100)
     RSI_PERIOD_VAL = globals().get('RSI_PERIOD', 14)
-    
     MACD_FAST_VAL = globals().get('MACD_FAST', 12)
     MACD_SLOW_VAL = globals().get('MACD_SLOW', 26)
     MACD_SIGNAL_VAL = globals().get('MACD_SIGNAL', 9)
@@ -183,7 +219,7 @@ def oblicz_wskaźniki_dodatkowe(data):
              if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
              else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
 
-        # 2. Konwersja typów (WZMOCNIONA)
+        # 2. Konwersja typów
         data['Close'] = data.get('Close', pd.Series(dtype='float64')).astype('float64')
         data['Low'] = data.get('Low', pd.Series(dtype='float64')).astype('float64')
         data['High'] = data.get('High', pd.Series(dtype='float64')).astype('float64')
@@ -194,7 +230,7 @@ def oblicz_wskaźniki_dodatkowe(data):
         # 3. SMA 
         data['SMA_Fast'] = ta.sma(data['Close'], length=SMA_FAST_VAL)
         data['SMA_Slow'] = ta.sma(data['Close'], length=SMA_SLOW_VAL)
-        data['SMA_Trend'] = ta.sma(data['Close'], length=SMA_TREND_FILTER_VAL) # 🚨 NOWY SMA
+        data['SMA_Trend'] = ta.sma(data['Close'], length=SMA_TREND_FILTER_VAL)
         
         data['SMA_Buy'] = (data['SMA_Fast'] > data['SMA_Slow']) & (data['SMA_Fast'].shift(1) <= data['SMA_Slow'].shift(1))
         data['SMA_Sell'] = (data['SMA_Fast'] < data['SMA_Slow']) & (data['SMA_Fast'].shift(1) >= data['SMA_Slow'].shift(1))
@@ -225,11 +261,11 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['MACD_Value'] = data[found_macd_name]
         data['MACDS_Value'] = data[found_signal_name]
         
-        # Logika MACD Crossover (do sygnałów filtrowanych)
+        # Logika MACD Crossover
         data['MACD_Buy'] = (data['MACD_Value'] > data['MACDS_Value']) & (data['MACD_Value'].shift(1) <= data['MACDS_Value'].shift(1))
         data['MACD_Sell'] = (data['MACD_Value'] < data['MACDS_Value']) & (data['MACD_Value'].shift(1) >= data['MACDS_Value'].shift(1))
         
-        # 🚨 MACD KIERUNEK (Używany jako filtr konfluencji)
+        # MACD KIERUNEK (Używany jako filtr konfluencji)
         data['MACD_Direction_Buy'] = data['MACD_Value'] >= data['MACDS_Value']
         data['MACD_Direction_Sell'] = data['MACD_Value'] <= data['MACDS_Value']
         
@@ -261,7 +297,6 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
         return
         
     macd_name = 'MACD_Value'
-    signal_name = 'MACDS_Value'
 
     kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend'] 
     
@@ -279,9 +314,6 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
 
     # Krok 2: POBRANIE OSTATNIEGO WIERSZA DANYCH
     ostatni_wiersz = dane_czyste.iloc[-1]
-    
-    # 🚨 BLOK LOGOWANIA DANYCH 🚨
-    # ... (BLOK LOGOWANIA bez zmian)
     
     # 3. FILTRY
     
@@ -334,6 +366,8 @@ if __name__ == "__main__":
     bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
     
     print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
+    
+    # Wysyłamy wiadomość tylko, jeśli test tokena się powiódł
     asyncio.run(wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów."))
     
     while True:
@@ -356,6 +390,7 @@ if __name__ == "__main__":
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
         time.sleep(wait_time)
+
 
 
 
