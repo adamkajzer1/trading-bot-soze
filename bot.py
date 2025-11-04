@@ -11,9 +11,9 @@ from collections import deque
 # --- KONFIGURACJA BOTA ---
 
 # 1. Zmień na swój token bota Telegram
-TELEGRAM_BOT_TOKEN = "Wpisz_Tutaj_Swój_Token"
+TELEGRAM_BOT_TOKEN = "WPISZ_SWÓJ_TOKEN_BOTA_TUTAJ" # Upewnij się, że to poprawny token!
 # 2. Zmień na swój ID czatu Telegram
-TELEGRAM_CHAT_ID = "Wpisz_Tutaj_Swój_ChatID"
+TELEGRAM_CHAT_ID = "WPISZ_SWÓJ_CHAT_ID_TUTAJ" # Upewnij się, że to Twój ID!
 
 # 3. Lista symboli do monitorowania (przykłady)
 # Pamiętaj: Wymagany jest suffix "=X" dla par Forex i ".L" dla akcji.
@@ -60,6 +60,11 @@ def log(message):
 
 def send_telegram_message(text):
     """Wysyła wiadomość do Telegrama."""
+    # Szybkie sprawdzenie, czy konfiguracja została zmieniona
+    if TELEGRAM_BOT_TOKEN == "WPISZ_SWÓJ_TOKEN_BOTA_TUTAJ" or TELEGRAM_CHAT_ID == "WPISZ_SWÓJ_CHAT_ID_TUTAJ":
+        log("UWAGA: Nie skonfigurowano poprawnie tokenu lub ID czatu Telegram! Wiadomość nie została wysłana.")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         'chat_id': TELEGRAM_CHAT_ID,
@@ -269,4 +274,5 @@ if __name__ == "__main__":
     # Inicjalizacja: Używamy asynchroniczności, aby uniknąć problemów z blokowaniem (opcjonalnie)
     # W prostych botach na PythonAnywhere wystarczy zwykła pętla while True.
     main_loop()
+
 
