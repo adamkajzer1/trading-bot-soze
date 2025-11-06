@@ -6,12 +6,10 @@ from telegram import Bot
 import asyncio
 import requests
 import os 
-import pandas_ta as pta # Zostawiam dla kompatybilności, ale usuwam pta, używamy ta
 from telegram.error import NetworkError
 
 # ==================== USTAWIENIA TELEGRAMA (CZYTANE Z ENV) ====================
-# WAŻNE: W Render.com powinieneś używać Zmiennych Środowiskowych (Environment Variables).
-# Tutaj używamy stałych stringów, aby naprawić błąd SyntaxError.
+# WAŻNE: Na Render.com używaj Zmiennych Środowiskowych!
 TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80" # TOKEN W CUDZYSŁOWACH!
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================================
@@ -22,13 +20,13 @@ SYMBOLS = [
     "EURGBP=X", "EURJPY=X", "EURAUD=X", "EURCAD=X", "EURCHF=X", "EURNZD=X",
     "GBPJPY=X", "GBPAUD=X", "GBPCAD=X", "GBPCHF=X", "GBPNZD=X",
     "AUDJPY=X", "CADJPY=X", "CHFJPY=X", "NZDJPY=X",
-    "GC=F",            # Złoto
-    "SI=F",            # Srebro
-    "BTC-USD"          # Bitcoin
+    "GC=F",          # Złoto
+    "SI=F",          # Srebro
+    "BTC-USD"        # Bitcoin
 ]
-FRAMES = ["1h", "15m", "5m"]        # LISTA INTERWAŁÓW
+FRAMES = ["1h", "15m", "5m"]      # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
-TP_RATIO = 2.0                      # Współczynnik Risk:Reward dla TP (R:R 1:2)
+TP_RATIO = 2.0                   # Współczynnik Risk:Reward dla TP (R:R 1:2)
 wait_time = 60 # 60 sekund = 1 minuta
 # ------------------------------------------------------------
 
@@ -206,7 +204,7 @@ async def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
         f"🎯 <b>TAKE PROFIT (R:R {TP_RATIO}):</b> <b>{tp_text}</b> (<code>{pips_reward}</code>)\n" 
         # 3. STOP LOSS (bold) + Pipsy
         f"🛑 <b>STOP LOSS:</b> <b>{sl_text}</b> (<code>{pips_risk}</code>)\n" 
-        f"   {'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy\n"
+        f"    {'Low' if kierunek == 'BUY' else 'High'} Poprz. Świecy\n"
         f"{details}"
     )
 
@@ -215,16 +213,35 @@ async def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
 
 
 def pobierz_dane(symbol, interwal):
-    """Pobiera historyczne dane OHLC z yfinance, bez agresywnego wstępnego czyszczenia."""
+    """
+    Pobiera historyczne dane OHLC z yfinance.
+    Dostosowuje 'period' w zależności od 'interval', aby uniknąć limitów Yahoo Finance (60 dni dla interwałów < 1h).
+    """
+    
+    # Logika dostosowania okresu:
+    # 5m i 15m (krótkie interwały) muszą mieć period <= 60d
+    # 1h i dłuższe mogą mieć period do 730d (2 lata)
+    if interwal in ["5m", "15m", "30m"]:
+        # Ustawiamy period na 59 dni, aby być bezpiecznym poniżej 60 dni
+        period_val = "59d"
+    else:
+        # Dla 1h i dłuższych, używamy 120 dni, aby obliczyć SMA 100
+        period_val = "120d" 
+        
+    print(f"DEBUG: YF Pobieram dane dla {symbol} {interwal} z period={period_val}")
+
     try:
-        # Zwiększamy okres, aby zapewnić wystarczającą ilość danych dla SMA 100
-        data = yf.download(symbol, interval=interwal, period="120d", progress=False) 
+        data = yf.download(symbol, interval=interwal, period=period_val, progress=False) 
+        
         if data.empty:
+            print(f"❌ POBIERANIE DANYCH PUSTE dla {symbol} ({interwal}).")
             return pd.DataFrame()  
+        
         print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")    
         return data
         
     except Exception as e:
+        # Ten błąd powinien zostać teraz obsłużony, bo dostosowujemy period
         print(f"❌ BŁĄD POBIERANIA DANYCH dla {symbol} ({interwal}): {e}")
         return pd.DataFrame()
 
@@ -244,6 +261,8 @@ def oblicz_wskaźniki_dodatkowe(data):
 
     try:
         # 1. NORMALIZACJA KOLUMN
+        # Używamy ujednoliconego nazewnictwa kolumn (Close, High, Low)
+        # To jest krytyczne, gdy yfinance zwraca (Symbol, Column) krotki lub tylko nazwy
         new_columns = [str(col[0]).title() if isinstance(col, tuple) else str(col).title() for col in data.columns]
         data.columns = new_columns
         
@@ -251,7 +270,7 @@ def oblicz_wskaźniki_dodatkowe(data):
             if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
             else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
 
-        # 2. Konwersja typów
+        # 2. Konwersja typów (zabezpieczenie)
         data['Close'] = data.get('Close', pd.Series(dtype='float64')).astype('float64')
         data['Low'] = data.get('Low', pd.Series(dtype='float64')).astype('float64')
         data['High'] = data.get('High', pd.Series(dtype='float64')).astype('float64')
@@ -296,7 +315,7 @@ def oblicz_wskaźniki_dodatkowe(data):
                     found_macd_name = 'MACD'
                     found_signal_name = 'MACDS'
                 else:
-                     raise ValueError(f"Kolumny MACD/MACDS nie zostały utworzone poprawnie. Dostępne kolumny: {data.columns.tolist()}")
+                    raise ValueError(f"Kolumny MACD/MACDS nie zostały utworzone poprawnie. Dostępne kolumny: {data.columns.tolist()}")
 
         data['MACD_Value'] = data[found_macd_name]
         data['MACDS_Value'] = data[found_signal_name]
@@ -343,9 +362,9 @@ async def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     try:
         # Zabezpieczenie przed brakującymi kolumnami
         for col in kolumny_do_czyszczenia_NaN:
-             if col not in dane_ze_strategia.columns: 
-                 print(f"OSTRZEŻENIE: Brak kolumny {col} w danych dla {symbol} {interwal}.")
-                 return
+            if col not in dane_ze_strategia.columns: 
+                print(f"OSTRZEŻENIE: Brak kolumny {col} w danych dla {symbol} {interwal}.")
+                return
         
         dane_czyste = dane_ze_strategia.dropna(subset=kolumny_do_czyszczenia_NaN).copy()
     except KeyError as e:
@@ -414,7 +433,7 @@ async def main_bot():
     print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
     
     # Wysyłamy wiadomość startową
-    await wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów. Pamiętaj, aby uruchomić mnie w usłudze 'Always-On Task' na PythonAnywhere.")
+    await wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów.")
     
     while True:
         print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
@@ -446,9 +465,9 @@ if __name__ == "__main__":
         print("🤖 Bot został ręcznie zatrzymany.")
     except RuntimeError as e:
         if "cannot run" in str(e) or "already running" in str(e):
-             print(f"Wykryto, że pętla zdarzeń już działa. Uruchamiam funkcję w tle. Pełny błąd: {e}")
-             # W przypadku środowiska, gdzie pętla już istnieje (np. Jupyter), obsługa jest inna
-             asyncio.create_task(main_bot())
+            print(f"Wykryto, że pętla zdarzeń już działa. Uruchamiam funkcję w tle. Pełny błąd: {e}")
+            # W przypadku środowiska, gdzie pętla już istnieje (np. Jupyter), obsługa jest inna
+            asyncio.create_task(main_bot())
         else:
             raise
 
