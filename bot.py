@@ -6,13 +6,12 @@ from telegram import Bot
 import asyncio
 import requests
 import os 
-
-# --- Import wskaźników technicznych ---
 import pandas_ta as pta 
-# --------------------------------------
 
 # ==================== USTAWIENIA TELEGRAMA (CZYTANE Z ENV) ====================
-TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80"
+# WAŻNE: W Render.com powinieneś używać Zmiennych Środowiskowych (Environment Variables).
+# Tutaj używamy stałych stringów, aby naprawić błąd SyntaxError.
+TELEGRAM_BOT_TOKEN = "8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80" # TOKEN W CUDZYSŁOWACH!
 TELEGRAM_CHAT_ID = "6703750254"
 # =============================================================================
 
@@ -72,15 +71,13 @@ def oblicz_pipsy(symbol, roznica):
 async def wyslij_alert(alert_text):
     """Wysyła alert za pomocą Telegrama asynchronicznie."""
     try:
-        # Bot nie jest zdefiniowany globalnie, więc użyjemy instancji globalnej
-        await Bot(8346426967:AAFboh8UQzHZfSRFW4qvXMGG2fzM0-DsO80).send_message(
-            chat_id=6703750254, 
+        # Poprawka: TELEGRAM_BOT_TOKEN musi być stringiem w Bot().
+        # Używamy zmiennej zdefiniowanej na początku skryptu.
+        await Bot(token=TELEGRAM_BOT_TOKEN).send_message(
+            chat_id=TELEGRAM_CHAT_ID, 
             text=alert_text, 
             parse_mode='HTML'
         )
-        print("✅ ALERT WYSŁANY DO TELEGRAMA: " + alert_text)
-    except Exception as e:
-        print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
         print("✅ ALERT WYSŁANY DO TELEGRAMA: " + alert_text)
     except Exception as e:
         print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
@@ -393,6 +390,7 @@ if __name__ == "__main__":
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
         time.sleep(wait_time)
+
 
 
 
