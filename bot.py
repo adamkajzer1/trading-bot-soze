@@ -6,7 +6,8 @@ from telegram import Bot
 import asyncio
 import requests
 import os 
-import pandas_ta as pta 
+import pandas_ta as pta # Zostawiam dla kompatybilności, ale usuwam pta, używamy ta
+from telegram.error import NetworkError
 
 # ==================== USTAWIENIA TELEGRAMA (CZYTANE Z ENV) ====================
 # WAŻNE: W Render.com powinieneś używać Zmiennych Środowiskowych (Environment Variables).
@@ -21,9 +22,9 @@ SYMBOLS = [
     "EURGBP=X", "EURJPY=X", "EURAUD=X", "EURCAD=X", "EURCHF=X", "EURNZD=X",
     "GBPJPY=X", "GBPAUD=X", "GBPCAD=X", "GBPCHF=X", "GBPNZD=X",
     "AUDJPY=X", "CADJPY=X", "CHFJPY=X", "NZDJPY=X",
-    "GC=F",          # Złoto
-    "SI=F",          # Srebro
-    "BTC-USD"        # Bitcoin
+    "GC=F",            # Złoto
+    "SI=F",            # Srebro
+    "BTC-USD"          # Bitcoin
 ]
 FRAMES = ["1h", "15m", "5m"]        # LISTA INTERWAŁÓW
 STRATEGIES = ["SMA", "RSI", "MACD"] 
@@ -71,35 +72,54 @@ def oblicz_pipsy(symbol, roznica):
 async def wyslij_alert(alert_text):
     """Wysyła alert za pomocą Telegrama asynchronicznie."""
     try:
-        # Poprawka: TELEGRAM_BOT_TOKEN musi być stringiem w Bot().
-        # Używamy zmiennej zdefiniowanej na początku skryptu.
-        await Bot(token=TELEGRAM_BOT_TOKEN).send_message(
+        # Poprawka: Użycie Bot z tokenem.
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
             text=alert_text, 
             parse_mode='HTML'
         )
-        print("✅ ALERT WYSŁANY DO TELEGRAMA: " + alert_text)
+        print("✅ ALERT WYSŁANY DO TELEGRAMA: " + alert_text.split('\n')[0])
+    except NetworkError as e:
+        print(f"❌ BŁĄD SIECI TELEGRAMU: {e}. Sprawdź token i połączenie.")
     except Exception as e:
         print(f"❌ BŁĄD WYSYŁANIA TELEGRAMU: {e}")
 
-def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
+async def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     """Formatuje i wysyła ładniejszy i bardziej szczegółowy alert sygnału."""
     
     # Krok 1: Bezpieczne pobranie kluczowych danych
-    price = wiersz['Close'].item()
-    
+    # Używamy .iloc[-1] jeśli 'wiersz' jest DataFramem z jednym wierszem
+    try:
+        price = wiersz['Close'].item()
+    except:
+        # Jeśli dostaniemy serię zamiast DataFrame z itemem
+        price = wiersz['Close'] 
+
     # POBIERANIE SL/TP
-    sl_low_item = wiersz.get('RSI_SL_Low', pd.NA).item() if wiersz.get('RSI_SL_Low', pd.NA) is not pd.NA else None
-    sl_high_item = wiersz.get('RSI_SL_High', pd.NA).item() if wiersz.get('RSI_SL_High', pd.NA) is not pd.NA else None
+    sl_low_item = wiersz.get('RSI_SL_Low', pd.NA) 
+    sl_high_item = wiersz.get('RSI_SL_High', pd.NA)
+
+    # Upewnienie się, że pobieramy pojedynczą wartość
+    try:
+        sl_low_val = sl_low_item.item() if sl_low_item is not pd.NA and isinstance(sl_low_item, pd.Series) else sl_low_item
+    except:
+        sl_low_val = sl_low_item
+    
+    try:
+        sl_high_val = sl_high_item.item() if sl_high_item is not pd.NA and isinstance(sl_high_item, pd.Series) else sl_high_item
+    except:
+        sl_high_val = sl_high_item
+
 
     sl_val = None
     
     if kierunek == "BUY":
         emoji = "🟢"
-        sl_val = sl_low_item
+        sl_val = sl_low_val
     else: # SELL
         emoji = "🔴"
-        sl_val = sl_high_item
+        sl_val = sl_high_val
 
     # Krok 2: Obliczanie SL i TP
     sl_text = "N/A"
@@ -109,51 +129,70 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     pips_risk = "N/A"
     pips_reward = "N/A"
 
-    if sl_val is not None:
+    if sl_val is not None and pd.notna(sl_val):
         try:
+            # Używamy price i sl_val jako floaty
             sl_text = f"{sl_val:.5f}"
+            price_f = float(price)
+            sl_val_f = float(sl_val)
             
             # Obliczenie ryzyka/nagrody
             if kierunek == "BUY":
-                risk_roznica = price - sl_val
-                tp_val = price + risk_roznica * TP_RATIO
-                reward_roznica = tp_val - price
+                risk_roznica = price_f - sl_val_f
+                tp_val = price_f + risk_roznica * TP_RATIO
+                reward_roznica = tp_val - price_f
             else: # SELL
-                risk_roznica = sl_val - price
-                tp_val = price - risk_roznica * TP_RATIO
-                reward_roznica = price - tp_val
+                risk_roznica = sl_val_f - price_f
+                tp_val = price_f - risk_roznica * TP_RATIO
+                reward_roznica = price_f - tp_val
 
             # OBLICZANIE PIPSÓW
             pips_risk = oblicz_pipsy(symbol, risk_roznica)
             pips_reward = oblicz_pipsy(symbol, reward_roznica)
                 
             tp_text = f"{tp_val:.5f}"
-        except:
+        except Exception as e:
+            print(f"Błąd obliczania SL/TP: {e}")
             sl_text = "Błąd SL"
             tp_text = "Błąd TP"
 
     # Krok 3: Szczegóły wskaźników (dodanie danych kontekstowych)
     details = f"\n\n⚙️ <b>Szczegóły Wskaźników ({strategia})</b>:"
     
-    if "SMA" in strategia:
-        sma_fast = wiersz.get('SMA_Fast', pd.NA).item() if wiersz.get('SMA_Fast', pd.NA) is not pd.NA else "N/A"
-        sma_slow = wiersz.get('SMA_Slow', pd.NA).item() if wiersz.get('SMA_Slow', pd.NA) is not pd.NA else "N/A"
-        sma_trend = wiersz.get('SMA_Trend', pd.NA).item() if wiersz.get('SMA_Trend', pd.NA) is not pd.NA else "N/A"
-        details += f"\n- SMA {SMA_FAST}/{SMA_SLOW}: <code>{sma_fast:.5f}</code> / <code>{sma_slow:.5f}</code>"
-        details += f"\n- Filtr Trendu (SMA {SMA_TREND_FILTER}): <code>{sma_trend:.5f}</code>"
+    # Bezpieczne pobieranie wartości wskaźników
+    def get_indicator_val(col_name):
+        val = wiersz.get(col_name, pd.NA)
+        try:
+            return val.item() if isinstance(val, pd.Series) else val
+        except:
+            return val
+
+    if "SMA" in strategia or "Cnf" in strategia:
+        sma_fast = get_indicator_val('SMA_Fast')
+        sma_slow = get_indicator_val('SMA_Slow')
+        sma_trend = get_indicator_val('SMA_Trend')
+        
+        sma_fast_text = f"{sma_fast:.5f}" if pd.notna(sma_fast) else "N/A"
+        sma_slow_text = f"{sma_slow:.5f}" if pd.notna(sma_slow) else "N/A"
+        sma_trend_text = f"{sma_trend:.5f}" if pd.notna(sma_trend) else "N/A"
+
+        details += f"\n- SMA {SMA_FAST}/{SMA_SLOW}: <code>{sma_fast_text}</code> / <code>{sma_slow_text}</code>"
+        details += f"\n- Filtr Trendu (SMA {SMA_TREND_FILTER}): <code>{sma_trend_text}</code>"
         
     if "RSI" in strategia:
-        rsi_val = wiersz.get('RSI', pd.NA).item() if wiersz.get('RSI', pd.NA) is not pd.NA else "N/A"
-        details += f"\n- RSI: <code>{rsi_val:.2f}</code> (Buy/Sell: {RSI_LOW_LEVEL}/{RSI_HIGH_LEVEL})"
+        rsi_val = get_indicator_val('RSI')
+        rsi_text = f"{rsi_val:.2f}" if pd.notna(rsi_val) else "N/A"
+        details += f"\n- RSI: <code>{rsi_text}</code> (Buy/Sell: {RSI_LOW_LEVEL}/{RSI_HIGH_LEVEL})"
 
     # MACD 
     if "MACD" in strategia or "Cnf" in strategia: 
-        macd_name = 'MACD_Value'
-        signal_name = 'MACDS_Value'
+        macd_val = get_indicator_val('MACD_Value')
+        signal_val = get_indicator_val('MACDS_Value')
         
-        macd_val = wiersz.get(macd_name, pd.NA).item() if wiersz.get(macd_name, pd.NA) is not pd.NA else "N/A"
-        signal_val = wiersz.get(signal_name, pd.NA).item() if wiersz.get(signal_name, pd.NA) is not pd.NA else "N/A"
-        details += f"\n- MACD/Signal: <code>{macd_val:.5f}</code> / <code>{signal_val:.5f}</code>"
+        macd_text = f"{macd_val:.5f}" if pd.notna(macd_val) else "N/A"
+        signal_text = f"{signal_val:.5f}" if pd.notna(signal_val) else "N/A"
+        
+        details += f"\n- MACD/Signal: <code>{macd_text}</code> / <code>{signal_text}</code>"
         
     # Krok 4: Składanie gotowej wiadomości
     alert_text = (
@@ -172,13 +211,14 @@ def generuj_alert(wiersz, symbol, interwal, strategia, kierunek):
     )
 
     # Wysłanie alertu
-    asyncio.run(wyslij_alert(alert_text))
+    await wyslij_alert(alert_text)
 
 
 def pobierz_dane(symbol, interwal):
     """Pobiera historyczne dane OHLC z yfinance, bez agresywnego wstępnego czyszczenia."""
     try:
-        data = yf.download(symbol, interval=interwal, period="60d", progress=False)
+        # Zwiększamy okres, aby zapewnić wystarczającą ilość danych dla SMA 100
+        data = yf.download(symbol, interval=interwal, period="120d", progress=False) 
         if data.empty:
             return pd.DataFrame()  
         print(f"DEBUG: YF Pobrana długość dla {symbol} {interwal}: {len(data)}")    
@@ -204,20 +244,12 @@ def oblicz_wskaźniki_dodatkowe(data):
 
     try:
         # 1. NORMALIZACJA KOLUMN
-        new_columns = []
-        for col in data.columns:
-            if isinstance(col, tuple): col_name = col[0] 
-            elif isinstance(col, str) and col.startswith("('"):
-                try: col_name = eval(col)[0] 
-                except: col_name = col
-            else: col_name = col
-            new_columns.append(str(col_name).title())
-
+        new_columns = [str(col[0]).title() if isinstance(col, tuple) else str(col).title() for col in data.columns]
         data.columns = new_columns
         
         if 'Close' not in data.columns:
-             if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
-             else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
+            if 'Adj Close' in data.columns: data['Close'] = data['Adj Close']
+            else: raise ValueError("Kolumna 'Close' jest pusta lub jej brakuje po ujednoliceniu.")
 
         # 2. Konwersja typów
         data['Close'] = data.get('Close', pd.Series(dtype='float64')).astype('float64')
@@ -244,19 +276,27 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['RSI_Sell'] = (data['RSI'].shift(1) > RSI_HIGH_LEVEL_VAL) & (data['RSI'] <= RSI_HIGH_LEVEL_VAL)
 
         # 5. MACD 
+        # Używamy pandas_ta dla MACD, które dodaje kolumny z sygnaturą
         data.ta.macd(fast=MACD_FAST_VAL, slow=MACD_SLOW_VAL, signal=MACD_SIGNAL_VAL, append=True)
         
         macd_signature = f'_{MACD_FAST_VAL}_{MACD_SLOW_VAL}_{MACD_SIGNAL_VAL}'
         
+        # Znajdowanie poprawnych nazw kolumn MACD
         found_macd_name = next((col for col in data.columns if macd_signature in col and col.lower().startswith('macd_') and 'h_' not in col.lower()), None)
         found_signal_name = next((col for col in data.columns if macd_signature in col and col.lower().startswith('macds_')), None)
         
         if found_macd_name is None or found_signal_name is None:
-             found_macd_name = next((col for col in data.columns if col.lower().startswith('macd_') and 'h_' not in col.lower()), None)
-             found_signal_name = next((col for col in data.columns if col.lower().startswith('macds_')), None)
-             
-             if found_macd_name is None or found_signal_name is None:
-                 raise ValueError(f"Kolumny MACD/MACDS nie zostały utworzone poprawnie. Dostępne kolumny: {data.columns.tolist()}")
+            # Próba znalezienia bez sygnatury (dla starszych wersji pandas_ta lub innych przypadków)
+            found_macd_name = next((col for col in data.columns if col.lower().startswith('macd_') and 'h_' not in col.lower()), None)
+            found_signal_name = next((col for col in data.columns if col.lower().startswith('macds_')), None)
+            
+            if found_macd_name is None or found_signal_name is None:
+                # W ostateczności używamy domyślnych nazw, jeśli są obecne
+                if 'MACD' in data.columns and 'MACDS' in data.columns:
+                    found_macd_name = 'MACD'
+                    found_signal_name = 'MACDS'
+                else:
+                     raise ValueError(f"Kolumny MACD/MACDS nie zostały utworzone poprawnie. Dostępne kolumny: {data.columns.tolist()}")
 
         data['MACD_Value'] = data[found_macd_name]
         data['MACDS_Value'] = data[found_signal_name]
@@ -281,7 +321,7 @@ def oblicz_wskaźniki_dodatkowe(data):
         data['MACD_Buy'] = data['MACD_Buy'].fillna(False) 
         data['MACD_Sell'] = data['MACD_Sell'].fillna(False) 
         
-        print(f"DEBUG: ROZMIAR KOŃCOWY (PRZED RETURN): {len(data)}. Nazwy MACD: {found_macd_name}, {found_signal_name}")
+        print(f"DEBUG: ROZMIAR KOŃCOWY (PRZED RETURN): {len(data)}")
         
         return data
         
@@ -290,7 +330,7 @@ def oblicz_wskaźniki_dodatkowe(data):
         print(f"PEŁNY BŁĄD: {e}") 
         return pd.DataFrame()
 
-def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
+async def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     """Iteruje przez wszystkie sygnały w ostatniej świecy z uwzględnieniem filtracji."""
     
     if dane_ze_strategia.empty:
@@ -298,17 +338,22 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
         
     macd_name = 'MACD_Value'
 
-    kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend'] 
+    kolumny_do_czyszczenia_NaN = ['Close', 'SMA_Slow', 'RSI', macd_name, 'SMA_Trend', 'Low', 'High', 'RSI_SL_Low', 'RSI_SL_High'] 
     
     try:
-        if macd_name not in dane_ze_strategia.columns: return
+        # Zabezpieczenie przed brakującymi kolumnami
+        for col in kolumny_do_czyszczenia_NaN:
+             if col not in dane_ze_strategia.columns: 
+                 print(f"OSTRZEŻENIE: Brak kolumny {col} w danych dla {symbol} {interwal}.")
+                 return
+        
         dane_czyste = dane_ze_strategia.dropna(subset=kolumny_do_czyszczenia_NaN).copy()
     except KeyError as e:
-        print(f"🛑 BŁĄD DANYCH: Nie można znaleźć wszystkich kolumn wskaźników w DF dla {symbol} {interwal}.")
+        print(f"🛑 BŁĄD DANYCH: Nie można znaleźć wszystkich kolumn wskaźników w DF dla {symbol} {interwal}. Brak klucza: {e}")
         return
     
     
-    if dane_czyste.empty:
+    if dane_czyste.empty or len(dane_czyste) < 2:
         print(f"OSTRZEŻENIE: Brak wystarczającej ilości danych do obliczenia wskaźników dla {symbol} {interwal}.")
         return
 
@@ -318,57 +363,58 @@ def sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, interwal):
     # 3. FILTRY
     
     # Filtr Trendu (SMA 100)
-    trend_filter_buy = ostatni_wiersz['Close'].item() > ostatni_wiersz['SMA_Trend'].item()
-    trend_filter_sell = ostatni_wiersz['Close'].item() < ostatni_wiersz['SMA_Trend'].item()
+    trend_filter_buy = ostatni_wiersz['Close'] > ostatni_wiersz['SMA_Trend']
+    trend_filter_sell = ostatni_wiersz['Close'] < ostatni_wiersz['SMA_Trend']
     
     # Filtr Konfluencji MACD (czy MACD jest powyżej/poniżej linii sygnału)
-    macd_conf_buy = ostatni_wiersz['MACD_Direction_Buy'].item() 
-    macd_conf_sell = ostatni_wiersz['MACD_Direction_Sell'].item() 
+    macd_conf_buy = ostatni_wiersz['MACD_Direction_Buy'] 
+    macd_conf_sell = ostatni_wiersz['MACD_Direction_Sell'] 
 
     
     # 4. SPRAWDZENIE SYGNAŁÓW Z NOWYMI WARUNKAMI
 
     # SPRAWDZENIE SMA Crossover (Wymaga Trendu i Konfluencji MACD)
     try:
-        if ostatni_wiersz['SMA_Buy'].item() and trend_filter_buy and macd_conf_buy:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "BUY")
+        if ostatni_wiersz['SMA_Buy'] and trend_filter_buy and macd_conf_buy:
+            # Przekazujemy ostatni wiersz jako Series, żeby nie używać .item()
+            await generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "BUY")
             
-        if ostatni_wiersz['SMA_Sell'].item() and trend_filter_sell and macd_conf_sell: 
-            generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "SELL")
+        if ostatni_wiersz['SMA_Sell'] and trend_filter_sell and macd_conf_sell: 
+            await generuj_alert(ostatni_wiersz, symbol, interwal, "SMA + MACD Cnf", "SELL")
     except KeyError:
         pass 
         
     # SPRAWDZENIE RSI (Wymaga Trendu i Konfluencji MACD)
     try:
-        if ostatni_wiersz['RSI_Buy'].item() and trend_filter_buy and macd_conf_buy: 
-            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "BUY")
+        if ostatni_wiersz['RSI_Buy'] and trend_filter_buy and macd_conf_buy: 
+            await generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "BUY")
             
-        if ostatni_wiersz['RSI_Sell'].item() and trend_filter_sell and macd_conf_sell:
-            generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "SELL")
+        if ostatni_wiersz['RSI_Sell'] and trend_filter_sell and macd_conf_sell:
+            await generuj_alert(ostatni_wiersz, symbol, interwal, f"RSI + MACD Cnf", "SELL")
     except KeyError:
         pass 
         
     # SPRAWDZENIE MACD Crossover (Wymaga Filtracji Trendu)
     try:
-        if ostatni_wiersz['MACD_Buy'].item() and trend_filter_buy:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "BUY")
+        if ostatni_wiersz['MACD_Buy'] and trend_filter_buy:
+            await generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "BUY")
             
-        if ostatni_wiersz['MACD_Sell'].item() and trend_filter_sell:
-            generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "SELL")
+        if ostatni_wiersz['MACD_Sell'] and trend_filter_sell:
+            await generuj_alert(ostatni_wiersz, symbol, interwal, "MACD Crossover (Filtrowany)", "SELL")
     except KeyError:
         pass
         
     return
     
-# ==================== URUCHOMIENIE PĘTLI 24/7 ====================
-if __name__ == "__main__":
-    
-    bot_instance = Bot(token=TELEGRAM_BOT_TOKEN)
+# ==================== GŁÓWNA PĘTLA ASYNCHRONICZNA ====================
+
+async def main_bot():
+    """Główna, asynchroniczna funkcja uruchamiająca bota 24/7."""
     
     print(f">>> BOT ALERT ZACZYNA PRACĘ. Monitoring {len(SYMBOLS)} par na {len(FRAMES)} interwałach i 3 strategiach! <<<")
     
-    # Wysyłamy wiadomość tylko, jeśli test tokena się powiódł
-    asyncio.run(wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów."))
+    # Wysyłamy wiadomość startową
+    await wyslij_alert(f"✅ SO-ZE: POMYŚLNIE POŁĄCZONY Telegram! Zaczynam skanowanie Filtrowanych Sygnałów. Pamiętaj, aby uruchomić mnie w usłudze 'Always-On Task' na PythonAnywhere.")
     
     while True:
         print(f"\n--- Rozpoczynam cykl skanowania ({pd.Timestamp.now().strftime('%H:%M:%S')}) ---")
@@ -384,9 +430,25 @@ if __name__ == "__main__":
                     
                     if not dane_ze_strategia.empty:
                         print(f"-> Sprawdzam sygnały dla {symbol} na {frame}") 
-                        sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, frame)
+                        # Używamy await, ponieważ sprawdz_wszystkie_strategie jest teraz async
+                        await sprawdz_wszystkie_strategie(dane_ze_strategia, symbol, frame)
                         
                 except Exception as e:
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
-        time.sleep(wait_time)
+        # Używamy asyncio.sleep zamiast time.sleep w kodzie asynchronicznym
+        await asyncio.sleep(wait_time)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main_bot())
+    except KeyboardInterrupt:
+        print("🤖 Bot został ręcznie zatrzymany.")
+    except RuntimeError as e:
+        if "cannot run" in str(e) or "already running" in str(e):
+             print(f"Wykryto, że pętla zdarzeń już działa. Uruchamiam funkcję w tle. Pełny błąd: {e}")
+             # W przypadku środowiska, gdzie pętla już istnieje (np. Jupyter), obsługa jest inna
+             asyncio.create_task(main_bot())
+        else:
+            raise
+
