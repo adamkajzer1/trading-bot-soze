@@ -390,11 +390,3 @@ if __name__ == "__main__":
                     print(f"❌ Wystąpił nieoczekiwany błąd w pętli dla {symbol} ({frame}): {e}")
         
         time.sleep(wait_time)
-
-
-
-
-
-
-
-
